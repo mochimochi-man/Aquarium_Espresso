@@ -36,14 +36,19 @@ struct DepthEv {
 };
 
 // distance-based motion history (one point per ~0.45px swum)
+// The head's path, in three dimensions: z is towards the glass. The body
+// follows it, so when the fish comes about - swimming round through the depth
+// of the tank - the body comes round the same curve behind the head, and on
+// the screen it foreshortens from the head back and flips over segment by
+// segment, the tail last.
 struct Trail {
   static const int CAP = 128;
-  float x[CAP], y[CAP];
+  float x[CAP], y[CAP], z[CAP];
   int   n, head;         // head = newest
   void reset() { n = 0; head = CAP - 1; }
-  void push(float px, float py) {
+  void push(float px, float py, float pz = 0.0f) {
     head = (head + 1) % CAP;
-    x[head] = px; y[head] = py;
+    x[head] = px; y[head] = py; z[head] = pz;
     if (n < CAP) n++;
   }
   // back = 0 is the newest sample
@@ -72,12 +77,31 @@ enum FishAct : uint8_t {
   // amano shrimp: picks at one spot, scoots to the next, swims when it wants
   // to be elsewhere, and shoots backwards when something startles it
   ACT_PICK, ACT_CRAWL, ACT_SWIMOFF, ACT_FLICK,
+  // hatchetfish: a short dip below the surface and back up
+  ACT_DIVE, ACT_RETURN,
+  // translucent glass catfish: holding its place in the shoal
+  ACT_STATION,
+  // clown loach: lying on its side, and running up and down the glass
+  ACT_PLAYDEAD, ACT_DANCE,
 };
 
 struct Fish {
   const SpeciesCfg* cfg;
   const SpeciesCfg* home;   // what it really is, while cfg says otherwise
   float x, y;
+  float z;               // depth of the head along its own path (see Trail)
+  // Which way it is pointing, as a fish points: `yaw` turns it about its own
+  // vertical axis (0 = broadside heading right, PI = heading left, +-PI/2 =
+  // nose to or from the glass) and `pitch` tips its nose up or down. A fish
+  // coming about turns towards or away from you; it does not wheel round in
+  // the plane of the glass, which is what reads as rolling onto its side.
+  float yaw, pitch;
+  float turnSide;        // which way round the next reversal goes, +-1
+  float yawV;            // how fast it is coming round, rad/s (eased)
+  float fore;            // how much of its length shows: |cos(yaw)|, floored
+  // The body's axis on the screen - derived from the two above, near level
+  // and pointing the way it faces. Kept because everything that asks "which
+  // way is it facing" reads it.
   float heading;
   float speed;
   float prevHeading;
@@ -112,9 +136,36 @@ struct Fish {
                          // axis. 0 = facing right, PI = facing left, and the
                          // values in between are the card edge-on.
   float flare;           // fin billow, 0 cruising .. 1.5 mid-turn
+  float dorsal;          // sailfin molly: 1 sail raised .. ~0.25 laid flat
+  float flat;            // clown loach: 0 upright .. 1 lying on its side
+  float tilt;            // nose-up lean, rad (the hatchetfish at the surface)
+  bool  air;             // hatchetfish: out of the water, mid-jump
+  bool  gone;            // ... and over the rim: removed at the end of the step
+  float vxAir, vyAir;    // its flight
+  int8_t reps;           // clown loach: laps of the glass left in a dance
+  float jumpIn;          // hatchetfish: seconds until it leaps, <0 when not
+  float ownDir;          // translucent glass catfish: the way it is facing (+1/-1)
+  float turnIn;          // ... and how long before it comes round to the shoal's
+  // Render-only, for the copies drawn at the surface (renderer.cpp); the fish
+  // the simulation steps always has these at their defaults.
+  float lenScale;        // body length and bone spacing, x
+  float hScale;          // body height, x
+  float alphaMul;        // opacity, x
+  bool  vflip;           // drawn upside down (the surface's reflection)
+  bool  bodyOnly;        // no fins, eye or veil
+  bool  dry;             // out of the water: no water haze
 };
 
 struct Surge  { float t, dur, dir, mag; };
+// What a hatchetfish throws up when it breaks the surface, and what it takes
+// down with it when it drops back in: droplets flung into the air, a puff of
+// bubbles under the film, and a ripple running out along it.
+enum SplashKind : uint8_t { SPL_DROP = 0, SPL_BUBBLE = 1, SPL_RIPPLE = 2 };
+struct Splash { float x, y, vx, vy, life, max, size; uint8_t kind; };
+static const int MAX_SPLASH = 96;
+// the water surface, in panel rows: the water line in the backdrops, where
+// the air stone's bubbles break (bubbles.cpp)
+static const float SURFACE_Y = 16.0f;
 struct Mote   { float x, y, vx, vy, a, ph; };
 struct Bubble { float x, y, r, vy, ph, a; };
 struct School { float x, y, tx, ty, timer, dash; float home, homeY; };
@@ -124,16 +175,45 @@ struct School { float x, y, tx, ty, timer, dash; float home, homeY; };
 // shoals with their own home stretch of the tank is what actually spreads
 // them out.
 static const int N_SCHOOLS = 3;
-// A shrimp day is not a full tank with shrimp added to it. It is a different
-// tank: the shoal is down to five fish and there are five Amano working the
-// sand instead. That gap is the point - twenty neons fill the middle of the
-// water and you never look past them, and five do not, so on a shrimp day you
-// notice the bottom is busy before you notice what is on it.
+// The stocking. Every group in the tank has a place, and at boot each place
+// is dealt one of the kinds that can fill it - all of that group, never a mix,
+// and never changed afterwards, so the tank you switch on is the tank you
+// watch:
+//
+//   15 neon tetras       always
+//    5 of one of         Amano shrimp, silver hatchet, green puffer, sailfin
+//                        molly, platy, striped panchax, nothobranchius
+//                        (equal odds)
+//    5 of one of         guppies (twice the odds of each other kind), or one
+//                        of the six fish above; and on about one boot in
+//                        twenty, guppies that are ebi-fry
+//    3 of one of         the same choice, dealt separately - but the fish
+//                        from the SD card, when there is one, take these
+//                        places first
+//    3 of one of         black tetras, translucent glass catfish (even odds)
+//    2 of one of         corydoras, clown loaches (even odds)
+//
+// The two choices of six may land on the same kind; then there are simply
+// more of it.
 //
 // So the stocking is a runtime number (`Sim::n`) and this is only the size of
-// the array: the biggest the tank ever gets, which is a day without shrimp.
-static const int N_FISH    = 20 + 8 + 3 + 2;   // neon, guppy, black, cory
-static const int N_NEON_SHRIMPDAY = 5;
+// the array.
+// Test build: every boot stocks hatchetfish in both places they can go, and
+// they jump every few seconds. 0 for normal use.
+#define TEST_HATCHET_JUMP 0
+
+// The hatchetfish leap is an escape, not a habit: something startles them - a
+// vibration in the water, a big fish coming up underneath - and the ones near
+// it go up together. This is how often, on average, something does, s.
+#if TEST_HATCHET_JUMP
+static const float SCARE_MEAN = 8.0f;
+#else
+static const float SCARE_MEAN = 1500.0f;
+#endif
+
+static const int N_NEON = 15;
+static const int N_MATE = 5;           // the five that share the neons' boot
+static const int N_FISH = N_NEON + N_MATE + 8 + 3 + 2;
 
 // How many copies of the picture on the SD card join the tank, when there is
 // one. More than one reads as a shoal of the same drawing, which is exactly
@@ -144,6 +224,7 @@ static const int N_NEON_SHRIMPDAY = 5;
 // at and the card cannot slowly silt it up.
 static const int CARD_MIN = 1, CARD_MAX = 3;
 static const int N_GUPPY = 8;                  // 2+2+2+1+1 across the strains
+static const int N_GUPPY_A = 5, N_GUPPY_B = 3; // the two places they are split into
 
 // How quickly the card's face catches up with the direction it is travelling.
 // This is only there to take the jitter out of the heading - it is not what
@@ -173,10 +254,23 @@ struct Sim {
   float  t;
   float  tw;             // t wrapped to a common period, for the trig calls
   bool   ebiDay;         // this boot's guppies are ebi-fry
-  bool   shrimpDay;      // this boot's tank came with shrimp in it
   float  sway;           // horizontal water displacement, px
   float  swayV;
+  // The translucent glass catfish shoal: where it is holding, where it is drifting to,
+  // and which way every one of them is facing.
+  float  tgcX, tgcY, tgcTx, tgcTy, tgcDir, tgcT;
+  float  tgcHold;        // time left before the shoal's way changes
+  float  scareIn;        // seconds to the next thing that sends the hatchets up
+  Splash splash[MAX_SPLASH];
+  int    nSplash;
 };
+
+// The translucent glass catfish do not turn together. The way the shoal faces
+// holds for a while; then it changes, and each fish comes round on its own
+// somewhere inside a grace period, so that by the end of it they all happen to
+// be facing the same way again.
+static const float TGC_HOLD_MIN  = 30.0f,  TGC_HOLD_MAX  = 180.0f;   // s
+static const float TGC_GRACE_MIN = 30.0f,  TGC_GRACE_MAX = 60.0f;    // s
 
 // Every multiplier applied to `t`/`beat` before sinf() is a multiple of 0.01,
 // so wrapping at 200*2pi keeps each wave continuous while keeping the argument
@@ -184,24 +278,17 @@ struct Sim {
 // per-pixel cost.
 static const float TRIG_WRAP = 200.0f * 2.0f * (float)M_PI;
 
-// Once in a while - about one power-up in thirty - the tank comes up with
-// every guppy already fried, and stays that way for the whole session. The
-// coin is tossed at boot and never again: a tank that started out normal stays
-// normal, so nothing ever changes under you while you are watching.
-static const float GAG_CHANCE = 0.03f;
-
-// And a second, much less silly coin, tossed at the same moment and for the
-// same reason: a tank either has Amano shrimp in it or it does not, and which
-// one you got should be settled before you start watching. About one boot in
-// ten comes up with them.
-static const float SHRIMP_CHANCE = 0.10f;
+// Once in a while - about one power-up in twenty - the guppies' place of
+// five comes up as guppies already fried, and stays that way for the whole
+// session.
+static const float GAG_CHANCE = 0.05f;
 
 void makeSim(Sim& sim);
 void stepSim(Sim& sim, float dt);
 void tapWater(Sim& sim, float x, float y);
 void startDepthEvent(Fish& f, bool stress);
 
-// walk the motion trail backwards by `back` px
-void trailAt(const Trail& tr, float back, float& ox, float& oy);
+// walk the motion trail backwards by `back` px (measured in 3D)
+void trailAt(const Trail& tr, float back, float& ox, float& oy, float& oz);
 
 #endif // PIXAQ_SIM_H

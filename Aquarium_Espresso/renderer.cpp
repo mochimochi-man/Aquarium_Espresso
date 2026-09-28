@@ -110,7 +110,19 @@ static void IRAM_ATTR drawSegment(const Rig& rig, const Fish& f, int b,
   const Bone& b1 = f.bones[b + 1];
   float mx = (b0.x + b1.x) * 0.5f + offX;
   float my = (b0.y + b1.y) * 0.5f;
-  float ang = atan2f(b0.y - b1.y, b0.x - b1.x);
+  // Each segment is drawn as it lies: as long on screen as its bones are
+  // apart (it foreshortens where the body runs into the depth of the tank),
+  // and facing whichever way it points, so in a turn the head comes round
+  // first and the tail last.
+  const float sdx = b0.x - b1.x, sdy = b0.y - b1.y;
+  const float slen = sqrtf(sdx * sdx + sdy * sdy);
+  const float gsf = sf * f.lenScale;               // drawn size (depth + surface copies)
+  const float full = segW * gsf;
+  const float fore = clampf(slen / (full > 0.1f ? full : 0.1f), 0.22f, 1.0f);
+  if (fabsf(sdx) > 0.15f * full) mirror = (sdx >= 0) ? 1.0f : -1.0f;
+  if (f.vflip) mirror = -mirror;                   // seen in the surface, belly up
+  float ang = (slen > 0.25f * full) ? atan2f(sdy, sdx)
+            : ((mirror == f.mirror) ? f.heading : (float)M_PI - f.heading);
   int srcX = (int)(W - (b + 1) * segW);
 
   // The browser evaluates the undulation once per bone segment, so the wave is
@@ -155,8 +167,9 @@ static void IRAM_ATTR drawSegment(const Rig& rig, const Fish& f, int b,
   float ca = fcos(ang), sa = fsin(ang);
   float tx = mx + drift * ca, ty = my + drift * sa;
 
-  const float dw = segW * sf + 1.2f;
-  const float lx0 = -segW * sf * 0.5f - 0.3f;
+  // turned from broadside, the body is foreshortened along its own length
+  const float dw = segW * gsf * fore + 1.2f;
+  const float lx0 = -segW * gsf * fore * 0.5f - 0.3f;
   // the membrane ripple is part of the billow too, not a constant flutter
   const float ripA = (c->A[b] + c->A[b + 1]) * 0.5f * c->fanRipple * sY
                    * (0.25f + 0.9f * f.flare);
@@ -205,6 +218,14 @@ static void IRAM_ATTR drawSegment(const Rig& rig, const Fish& f, int b,
   if (ix0 >= ix1 || iy0 >= iy1) return;
 
   const RGBA8* spr = rig.spr;
+  // The sailfin molly's sail folds. Everything above the line where it meets
+  // the back is squashed down onto that line by `dorsal`, and swept back as
+  // it goes - a laid-down fin lies along the body, it does not just get
+  // shorter. Done as a remap of the sample: a pixel `d` rows above the back
+  // shows the sail from d/dorsal rows up, taken from further forward.
+  const int8_t* sail = (c->key == SP_MOLLY) ? MOLLY_DORSAL : nullptr;
+  const float sailInv = 1.0f / (f.dorsal > 0.2f ? f.dorsal : 0.2f);
+  const float sailLay = (1.0f - f.dorsal) * 1.3f;
   const float invDw = 1.0f / dw;
   const float invSY = 1.0f / sY;
   const float uScale = invDw * segW;
@@ -226,14 +247,16 @@ static void IRAM_ATTR drawSegment(const Rig& rig, const Fish& f, int b,
   // The haze folds into these constants for free: the accumulator already has
   // the coverage sum, so scaling the sprite colour by (1-h) and adding the
   // water tint times the coverage costs nothing in the pixel loop.
-  const float h = gag ? 0.0f : hazeFor(sf), k = 1.0f - h;
-  const float PR = 31.0f / (255.0f * SEG_SAMPLES) * lg * k;
-  const float PG = 63.0f / (255.0f * SEG_SAMPLES) * lg * k;
-  const float PB = 31.0f / (255.0f * SEG_SAMPLES) * lg * k;
-  const float HR = (HAZE_R8 * 31.0f / 255.0f) * lg * h / SEG_SAMPLES;
-  const float HG = (HAZE_G8 * 63.0f / 255.0f) * lg * h / SEG_SAMPLES;
-  const float HB = (HAZE_B8 * 31.0f / 255.0f) * lg * h / SEG_SAMPLES;
-  const float AL = 32.0f / SEG_SAMPLES;
+  const float h = (gag || f.dry) ? 0.0f : hazeFor(sf), k = 1.0f - h;
+  // premultiplied, so a fainter copy is every term scaled together
+  const float am = f.alphaMul;
+  const float PR = 31.0f / (255.0f * SEG_SAMPLES) * lg * k * am;
+  const float PG = 63.0f / (255.0f * SEG_SAMPLES) * lg * k * am;
+  const float PB = 31.0f / (255.0f * SEG_SAMPLES) * lg * k * am;
+  const float HR = (HAZE_R8 * 31.0f / 255.0f) * lg * h / SEG_SAMPLES * am;
+  const float HG = (HAZE_G8 * 63.0f / 255.0f) * lg * h / SEG_SAMPLES * am;
+  const float HB = (HAZE_B8 * 31.0f / 255.0f) * lg * h / SEG_SAMPLES * am;
+  const float AL = 32.0f / SEG_SAMPLES * am;
 
   float lxRow[SEG_SAMPLES], lyRow[SEG_SAMPLES];
   for (int y = iy0; y < iy1; y++) {
@@ -299,8 +322,17 @@ static void IRAM_ATTR drawSegment(const Rig& rig, const Fish& f, int b,
         if (hit < 0) continue;
         int art = hit - biasVal;
         if (art < 0 || art >= H) continue;
+        int sc = srcX + col;
+        if (sail && sail[sc] >= 0 && art * 4 + 2 < sail[sc]) {
+          const float base = sail[sc] * 0.25f;
+          const float dsrc = (base - (art + 0.5f)) * sailInv;
+          const int sr = (int)(base - dsrc + 4096.0f) - 4096;
+          const int sc2 = sc + (int)(dsrc * sailLay);
+          if (sr < 0 || sc2 >= W || sail[sc2] < 0 || sr * 4 + 2 >= sail[sc2]) continue;
+          art = sr; sc = sc2;
+        }
 
-        const RGBA8& sp = spr[art * W + srcX + col];
+        const RGBA8& sp = spr[art * W + sc];
         if (!sp.a) continue;
         float a = sp.a * (1.0f / 255.0f);
         ar += sp.r * a; ag += sp.g * a; ab += sp.b * a; aa += a;
@@ -494,6 +526,9 @@ static void drawFish(const Rig& rig, const Fish& f, float offX) {
   float sgn = (ch >= 0) ? 1.0f : -1.0f;
   float pitch = d.bell * d.sign * c->pitchMax + pitchBody * -sgn;
   float sY = clampf(1 - 0.5f * fabsf(fsin(pitch)), 0.78f, 1.0f);
+  // a clown loach lying on its side shows its back to the glass: a thin shape
+  if (c->key == SP_LOACH) sY *= 1.0f - 0.55f * f.flat;
+  sY *= f.hScale;
   float sf = f.sf;
   float facing = f.facing;                  // 1 side view, dips mid depth-event
   float drift = (1 - sf) * 8 * facing;      // strips lurch forward near the glass
@@ -509,13 +544,19 @@ static void drawFish(const Rig& rig, const Fish& f, float offX) {
 
   // --- guppy trailing caudal veil (behind the body) ------------------------
   int64_t _t0 = esp_timer_get_time();
-  if (c->key == SP_GUPPY) {
+  if (c->key == SP_GUPPY && !f.bodyOnly) {
     const float flare = f.flare;
+    // the veil streams back from the last bone along the body's axis
     float px[5], py[5];
+    const Bone& tb = f.bones[BONES - 1];
+    const float tcx = -fcos(tb.a), tcy = -fsin(tb.a);
+    const Bone& tb3 = f.bones[BONES - 2];
+    const float tl = sqrtf((tb3.x - tb.x) * (tb3.x - tb.x) + (tb3.y - tb.y) * (tb3.y - tb.y));
+    const float tfore = clampf(tl / (c->spacing * f.sf), 0.22f, 1.0f);
     for (int k = 0; k <= 4; k++) {
-      float back = c->spacing * (BONES - 1) - 1.5f + k * 1.5f;
-      trailAt(f.trail, back, px[k], py[k]);
-      px[k] += offX;
+      float back = (-1.5f + k * 1.5f) * tfore * f.sf;
+      px[k] = tb.x + tcx * back + offX;
+      py[k] = tb.y + tcy * back;
     }
     float xs[10], ys[10];
     float Lx[5], Ly[5], Rx[5], Ry[5];
@@ -568,13 +609,16 @@ static void drawFish(const Rig& rig, const Fish& f, float offX) {
   tSeg[cid] += (uint32_t)(_t2 - _t1);
 
   // --- neon iridescent stripe glow -----------------------------------------
-  if (c->key == SP_NEON) {
+  if (c->key == SP_NEON && !f.bodyOnly) {
     const Bone& m = f.bones[1];
     float glow = 0.6f + 0.4f * fsin(f.beat * 0.5f + f.phase) + (1 - sf) * 0.8f;
     float ca = fcos(m.a), sa = fsin(m.a);
     float ox = m.x + offX, oy = m.y;
     const float W = c->W;
-    const float lx0 = -W * 0.4f, lx1 = W * 0.45f;
+    const Bone& m2 = f.bones[2];
+    const float ml = sqrtf((m.x - m2.x) * (m.x - m2.x) + (m.y - m2.y) * (m.y - m2.y));
+    const float mfore = clampf(ml / (c->spacing * f.sf), 0.22f, 1.0f);
+    const float lx0 = -W * 0.4f * mfore, lx1 = W * 0.45f * mfore;
     float lxs[4] = { lx0, lx1, lx1, lx0 };
     float lys[4] = { -0.7f, -0.7f, 0.7f, 0.7f };
     float xs[4], ys[4];
@@ -596,6 +640,7 @@ static void drawFish(const Rig& rig, const Fish& f, float offX) {
     fillPolyAA(xs, ys, 4, gp);
   }
 
+  if (f.bodyOnly) { tExtra[cid] += (uint32_t)(esp_timer_get_time() - _t2); return; }
   const Bone& head = f.bones[0];
   float hx = fcos(head.a), hy = fsin(head.a);
 
@@ -642,6 +687,9 @@ static void drawFish(const Rig& rig, const Fish& f, float offX) {
            0.6f, hazed(196, 206, 194, lgF, hF), 0.18f);
   } else {
     // --- eye: a single dark pixel on the head side, plus a far-eye hint -----
+    // (not for the hatchetfish, whose eye is well back from the snout and is
+    // baked into its sprite - a dot here would sit on its lip)
+    if (c->key != SP_HATCHET) {
     float ex = head.x + offX + hx * 1.0f * sf + mir * hy * 0.9f * sY;
     float ey = head.y + hy * 1.0f * sf - mir * hx * 0.9f * sY;
     fillRectAA(ex - 0.45f, ey - 0.45f, 0.9f, 0.9f,
@@ -652,9 +700,13 @@ static void drawFish(const Rig& rig, const Fish& f, float offX) {
       float ey2 = head.y + hy * 1.1f * sf + mir * hx * 1.0f * sY;
       fillRectAA(ex2 - 0.4f, ey2 - 0.4f, 0.8f, 0.8f, rgb565(6, 14, 16), a2 * 0.7f);
     }
+    }
 
     // --- pectoral fins -----------------------------------------------------
-    float flap = fsin(f.beat * 2.1f + f.phase) * (0.5f + d.bell + f.flare * 0.4f);
+    // a puffer hovers on its pectorals, and they never stop fluttering
+    const bool puff = (c->key == SP_PUFFER);
+    float flap = fsin(f.beat * (puff ? 6.0f : 2.1f) + f.phase)
+               * (0.5f + d.bell + f.flare * 0.4f + (puff ? 0.4f : 0.0f));
     const Bone& pb = f.bones[1];
     float pa = pb.a + mir * ((float)M_PI_2 + flap * 0.55f);
     float pl = (c->key == SP_NEON ? 2.2f : 3.2f) * (1 + d.bell * 0.4f);
@@ -663,6 +715,9 @@ static void drawFish(const Rig& rig, const Fish& f, float offX) {
     if (c->key == SP_NEON)
       lineAA(bx, by, bx + fcos(pa) * pl, by + fsin(pa) * pl, 0.7f,
              hazed(170, 235, 228, lgF, hF), 0.55f);
+    else if (puff)
+      lineAA(bx, by, bx + fcos(pa) * pl, by + fsin(pa) * pl, 0.7f,
+             hazed(200, 222, 196, lgF, hF), 0.55f);
     else
       lineAA(bx, by, bx + fcos(pa) * pl, by + fsin(pa) * pl, 0.7f,
              hazed(235, 150, 110, lgF, hF), 0.60f);
@@ -687,6 +742,56 @@ static void drawFish(const Rig& rig, const Fish& f, float offX) {
 
 // how far outside its spine a fish can paint: veil overhang, fins, sprite depth
 static inline int fishMargin(const SpeciesCfg* c) { return c->H + 14; }
+
+// ---------------------------------------------------------------------------
+// The surface, seen through the front glass from a little below it.
+//
+// Below the surface everything is seen through water, which makes it look
+// about 1.33 times nearer and larger than it is; above it, through air, a
+// thing is its own size. So the part of a fish that is out of the water -
+// a hatchetfish breaking the surface, or in the air - is drawn a quarter
+// smaller, pulled down towards the surface line, and with no water haze on
+// it; the body steps in size where it crosses the line.
+//
+// And the underside of the surface is a mirror - total internal reflection -
+// so a fish just under it has an upside-down twin just above it, fading as
+// the fish goes deeper.
+static const float AIR_SCALE = 0.75f;          // 1 / 1.33
+static const float REFLECT_DEPTH = 16.0f;      // rows under the surface it still shows
+static const float REFLECT_SQUASH = 0.6f;      // the mirror is seen at a grazing angle
+
+// a fish is 2KB with its trail - too big to copy onto a render task's stack
+static Fish gSurfaceCopy[2];
+
+static void toAir(Fish& g, const Fish& f) {
+  const float S = SURFACE_Y;
+  // about the fish's own position, with a little of the pull towards the
+  // middle of the view that a real change of magnification has
+  const float ax = f.x, pull = (160.0f - f.x) * 0.05f;
+  for (int b = 0; b < BONES; b++) {
+    g.bones[b].x = ax + (f.bones[b].x - ax) * AIR_SCALE + pull;
+    g.bones[b].y = S - (S - f.bones[b].y) * AIR_SCALE;
+  }
+  g.x = g.bones[0].x; g.y = g.bones[0].y;
+  g.lenScale = AIR_SCALE;
+  g.hScale = AIR_SCALE;
+  g.dry = true;
+}
+
+static void toMirror(Fish& g, const Fish& f, float strength) {
+  const float S = SURFACE_Y;
+  for (int b = 0; b < BONES; b++) {
+    g.bones[b].y = S - (f.bones[b].y - S) * REFLECT_SQUASH;
+    const float a = f.bones[b].a;
+    g.bones[b].a = atan2f(-fsin(a) * REFLECT_SQUASH, fcos(a));
+  }
+  g.heading = atan2f(-fsin(f.heading) * REFLECT_SQUASH, fcos(f.heading));
+  g.y = g.bones[0].y;
+  g.hScale = REFLECT_SQUASH;
+  g.vflip = true;
+  g.bodyOnly = true;
+  g.alphaMul = strength;
+}
 
 void renderBand(const Sim& sim, int y0, int y1) {
   const int cid = xPortGetCoreID();
@@ -719,8 +824,63 @@ void renderBand(const Sim& sim, int y0, int y1) {
     if (ymax + m < y0 || ymin - m >= y1) continue;
 
     float offX = sim.sway * (0.55f + 0.45f * (f.sf - 0.74f) / 0.54f);
-    if (f.cfg->key == SP_CARD) drawCard(*rigFor(f.cfg), f, offX);
-    else                       drawFish(*rigFor(f.cfg), f, offX);
+    if (f.cfg->key == SP_CARD) { drawCard(*rigFor(f.cfg), f, offX); continue; }
+    const Rig& rig = *rigFor(f.cfg);
+    const int S = (int)SURFACE_Y;
+    if (ymin - m >= SURFACE_Y + REFLECT_DEPTH || y0 >= S + (int)REFLECT_DEPTH + m) {
+      drawFish(rig, f, offX);                  // nowhere near the surface
+      continue;
+    }
+    // its reflection in the underside of the surface, just above it
+    const float depth = ymin - SURFACE_Y;      // of its highest point
+    if (!f.air && depth > -2.0f && depth < REFLECT_DEPTH && y0 < S) {
+      clipBand(y0, y1 < S ? y1 : S);
+      Fish& g = gSurfaceCopy[cid];
+      g = f;
+      toMirror(g, f, 0.38f * (1.0f - fmaxf(depth, 0.0f) / REFLECT_DEPTH));
+      drawFish(rig, g, offX);
+    }
+    // under the surface, as it is
+    if (y1 > S) {
+      clipBand(y0 > S ? y0 : S, y1);
+      drawFish(rig, f, offX);
+    }
+    // above it: the part that is out, seen through air
+    if (y0 < S) {
+      clipBand(y0, y1 < S ? y1 : S);
+      if (ymin < SURFACE_Y) {
+        Fish& g = gSurfaceCopy[cid];
+        g = f;
+        toAir(g, f);
+        drawFish(rig, g, offX);
+      }
+    }
+    clipBand(y0, y1);
+  }
+
+  // --- splashes: spray, bubbles and a ripple where a hatchetfish broke the
+  // surface. Only ever a few rows either side of the surface, so most bands
+  // skip the lot.
+  if (sim.nSplash && y0 < (int)SURFACE_Y + 40 && y1 > 0) {
+    for (int i = 0; i < sim.nSplash; i++) {
+      const Splash& p = sim.splash[i];
+      const float fade = p.life / p.max;
+      if (p.kind == SPL_DROP) {
+        fillRectAA(p.x - p.size * 0.5f, p.y - p.size * 0.5f, p.size, p.size,
+                   rgb565(225, 240, 245), 0.85f * fade + 0.1f);
+      } else if (p.kind == SPL_BUBBLE) {
+        const float s = p.size;
+        // a pale rim and a brighter glint, which is all a bubble is at this size
+        fillRectAA(p.x - s * 0.5f, p.y - s * 0.5f, s, s, rgb565(190, 225, 232), 0.40f * fade + 0.1f);
+        fillRectAA(p.x - s * 0.3f, p.y - s * 0.3f, 0.6f, 0.6f, rgb565(245, 252, 255), 0.6f * fade);
+      } else {
+        // the ring seen edge-on: a bright line along the surface, spreading and fading
+        const float age = 1.0f - fade;
+        const float r = (3.0f + age * 26.0f) * p.size;
+        lineAA(p.x - r, p.y, p.x - r * 0.35f, p.y, 0.8f, rgb565(215, 238, 242), 0.55f * fade);
+        lineAA(p.x + r * 0.35f, p.y, p.x + r, p.y, 0.8f, rgb565(215, 238, 242), 0.55f * fade);
+      }
+    }
   }
 
   clipBand(0, FB_H);

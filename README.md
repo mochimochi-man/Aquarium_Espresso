@@ -6,7 +6,35 @@
 
 A small tropical fish tank on an ESP32-S3 + ST7789 (320x240, landscape).
 
-Guppies, neon tetras, black tetras and corydoras — plus the occasional Amano shrimp. (And maybe something else?)
+The fish are listed below. They are chosen at random.
+
+Guppy
+
+Neon tetra
+
+Black tetra
+
+Corydoras
+
+Amano shrimp
+
+Silver hatchetfish　* Left alone, it may jump out and disappear.
+
+Translucent glass catfish
+
+Sailfin molly
+
+Green spotted puffer
+
+Platy
+
+Aplocheilus lineatus
+
+Clown loach
+
+Nothobranchius rachovii
+
+(Secret)
 
 There is nothing for you to do.
 
@@ -51,7 +79,9 @@ FlashSize=16M
 PartitionScheme=huge\_app
 
 
+
 You also need to install LovyanGFX as a library.
+
 
 
 ## Swimming your own character

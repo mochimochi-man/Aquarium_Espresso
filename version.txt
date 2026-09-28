@@ -1,0 +1,2 @@
+1.2.0 - added 8 fishes, added 2 BG, fixed fish behavior.
+1.0.0 - first release.

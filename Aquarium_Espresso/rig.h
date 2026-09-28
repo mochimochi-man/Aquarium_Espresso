@@ -16,7 +16,9 @@
 static const int BONES = 5;
 
 enum SpKey : uint8_t { SP_NEON = 0, SP_GUPPY = 1, SP_BLACK = 2, SP_CORY = 3,
-                       SP_EBI = 4, SP_SHRIMP = 5, SP_CARD = 6 };
+                       SP_EBI = 4, SP_SHRIMP = 5, SP_CARD = 6,
+                       SP_HATCHET = 7, SP_TRANSLUCENT = 8, SP_LOACH = 9, SP_PUFFER = 10,
+                       SP_MOLLY = 11, SP_PLATY = 12, SP_PANCHAX = 13, SP_NOTHO = 14 };
 
 struct SpeciesCfg {
   SpKey       key;
@@ -49,11 +51,23 @@ extern const SpeciesCfg BLACKTETRA;
 extern const SpeciesCfg CORYDORAS;
 extern const SpeciesCfg YAMATO;
 extern const SpeciesCfg EBIFRY;
+extern const SpeciesCfg HATCHET;
+extern const SpeciesCfg TRANSLUCENT;
+extern const SpeciesCfg CLOWNLOACH;
+extern const SpeciesCfg PUFFER;
+extern const SpeciesCfg SAILFIN;
+extern const SpeciesCfg PLATY;
+extern const SpeciesCfg PANCHAX;
+extern const SpeciesCfg NOTHO;
+// the eight that came second, in one list so stocking can walk it
+static const int N_NEWSP = 8;
+extern const SpeciesCfg* const NEW_SPECIES[N_NEWSP];
 // Not const: how many there are and what they look like are both decided at
 // boot, by what is on the card. See cardfish.h.
 extern SpeciesCfg CARDFISH;
-static const int N_RIGS = 11;         // five species, five guppy strains, gag,
-                                      // and whatever is on the SD card
+static const int N_RIGS = 19;         // five species, five guppy strains, gag,
+                                      // whatever is on the SD card, and the
+                                      // second eight
 
 extern Rig RIGS[N_RIGS];
 
