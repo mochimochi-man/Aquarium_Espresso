@@ -126,34 +126,69 @@ static void makeFish(Fish& f, const SpeciesCfg* cfg, bool school, int sid,
   f.thrash = 0;
 }
 
+// --- the codes the serial console uses --------------------------------------
+uint8_t gForce[N_PLACES] = { FC_RND, FC_RND, FC_RND, FC_RND, FC_RND };
+
+static const char* const CODE_NAME[FC_COUNT] = {
+  "RND", "GPY", "EBI", "NEO", "SHR", "HAT", "PUF", "MOL", "PLA",
+  "PAN", "NOT", "BLK", "TGC", "COR", "LOA",
+};
+static const char* const CODE_LABEL[FC_COUNT] = {
+  "random", "guppy", "ebi-fry", "neon tetra", "amano shrimp", "silver hatchet",
+  "green puffer", "sailfin molly", "platy", "striped panchax", "nothobranchius",
+  "black tetra", "translucent glass catfish", "corydoras", "clown loach",
+};
+const char* fishCodeName(uint8_t c)  { return c < FC_COUNT ? CODE_NAME[c] : "?"; }
+const char* fishCodeLabel(uint8_t c) { return c < FC_COUNT ? CODE_LABEL[c] : "?"; }
+int fishCodeParse(const char* s) {
+  for (int c = 0; c < FC_COUNT; c++)
+    if (strcasecmp(s, CODE_NAME[c]) == 0) return c;
+  return -1;
+}
+
+// the kind a code stands for; guppies and ebi-fry are drawn from the strains
+static const SpeciesCfg* cfgForCode(uint8_t c) {
+  switch (c) {
+    case FC_NEO: return &NEON;        case FC_SHR: return &YAMATO;
+    case FC_HAT: return &HATCHET;     case FC_PUF: return &PUFFER;
+    case FC_MOL: return &SAILFIN;     case FC_PLA: return &PLATY;
+    case FC_PAN: return &PANCHAX;     case FC_NOT: return &NOTHO;
+    case FC_BLK: return &BLACKTETRA;  case FC_TGC: return &TRANSLUCENT;
+    case FC_COR: return &CORYDORAS;   case FC_LOA: return &CLOWNLOACH;
+    default:     return nullptr;
+  }
+}
+
 void makeSim(Sim& sim) {
   // --- the stocking, dealt once (see sim.h) ---
-  static const SpeciesCfg* const SIX[6] = {
-    &HATCHET, &PUFFER, &SAILFIN, &PLATY, &PANCHAX, &NOTHO,
-  };
+  // A place set over the serial line keeps what it was set to; the rest are
+  // dealt as always, and never the same kind as another place (fried guppies
+  // excepted - those are not guppies any more). When places could share, the
+  // same fish came up in two or three of them far too often, and with the big
+  // ones - a sailfin molly is 32px - a boot could be a dozen of one kind.
   auto pick = [](int n) { int k = (int)rnd(0, n); return k >= n ? n - 1 : k; };
-  // the neons' five: the shrimp or one of the six, all alike
-  const int m = pick(7);
-  const SpeciesCfg* mate = (m == 6) ? &YAMATO : SIX[m];
-#if TEST_HATCHET_JUMP
-  mate = &HATCHET;
-#endif
-  // The guppies' eight, as two places of five and three, each dealt on its
-  // own: guppies (twice the odds) or one of the six. nullptr means guppies.
-  // The five are where the ebi-fry turn up; the three are where the card's
-  // fish go, when there is a card.
-  auto dealGuppyPlace = [&]() -> const SpeciesCfg* {
-    const int g = pick(8);
-    return (g < 2) ? nullptr : SIX[g - 2];
+  uint8_t pc[N_PLACES];
+  for (int p = 0; p < N_PLACES; p++) pc[p] = gForce[p];
+  auto used = [&](uint8_t c) {
+    for (int p = 0; p < N_PLACES; p++) if (pc[p] == c) return true;
+    return false;
   };
-  sim.ebiDay = (rnd01() < GAG_CHANCE);
-  const SpeciesCfg* g5 = sim.ebiDay ? nullptr : dealGuppyPlace();
-  const SpeciesCfg* g3 = dealGuppyPlace();
+  // the neons' five: more neons, the shrimp, or one of the six, all alike
+  static const uint8_t MATE8[8] = { FC_NEO, FC_SHR, FC_HAT, FC_PUF, FC_MOL, FC_PLA, FC_PAN, FC_NOT };
+  // the guppies' places: guppies at twice the odds, or one of the six
+  static const uint8_t G8[8] = { FC_GPY, FC_GPY, FC_HAT, FC_PUF, FC_MOL, FC_PLA, FC_PAN, FC_NOT };
+  if (pc[0] == FC_RND) { uint8_t c; do c = MATE8[pick(8)]; while (used(c)); pc[0] = c; }
+  if (pc[1] == FC_RND) {
+    if (rnd01() < GAG_CHANCE && !used(FC_EBI)) pc[1] = FC_EBI;
+    else { uint8_t c; do c = G8[pick(8)]; while (used(c)); pc[1] = c; }
+  }
+  if (pc[2] == FC_RND) { uint8_t c; do c = G8[pick(8)]; while (used(c)); pc[2] = c; }
+  if (pc[3] == FC_RND) pc[3] = (rnd01() < 0.5f) ? FC_BLK : FC_TGC;
+  if (pc[4] == FC_RND) pc[4] = (rnd01() < 0.5f) ? FC_COR : FC_LOA;
 #if TEST_HATCHET_JUMP
-  g3 = &HATCHET;
+  pc[0] = FC_HAT; pc[2] = FC_HAT;
 #endif
-  const SpeciesCfg* mid = (rnd01() < 0.5f) ? &BLACKTETRA : &TRANSLUCENT;
-  const SpeciesCfg* bottom = (rnd01() < 0.5f) ? &CORYDORAS : &CLOWNLOACH;
+  sim.ebiDay = used(FC_EBI);
 
   sim.tgcX = sim.tgcTx = rnd(80, 240);
   sim.tgcY = sim.tgcTy = rnd(TRANSLUCENT.yLo + 14, TRANSLUCENT.yHi - 14);
@@ -192,12 +227,10 @@ void makeSim(Sim& sim) {
     makeFish(sim.fish[i++], &NEON, true, sid,
              sim.school[sid].x, sim.school[sid].y);
   }
-  for (int k = 0; k < N_MATE; k++)
-    makeFish(sim.fish[i++], mate, false, -1, 0, 0);
-  // The guppy strains, shuffled, so which strains end up in which place -
-  // and which ones the card pushes out - is not always the same.
+  // The guppy strains, shuffled, so which strains end up where - and which
+  // ones the card pushes out - is not always the same.
   uint8_t gs[N_GUPPY];
-  int ng = 0;
+  int ng = 0, gnext = 0;
   for (int g = 0; g < 5; g++)
     for (int k = 0; k < GUPPY_STRAINS[g].count && ng < N_GUPPY; k++)
       gs[ng++] = (uint8_t)g;
@@ -205,46 +238,55 @@ void makeSim(Sim& sim) {
     int j = pick(k + 1);
     uint8_t t = gs[k]; gs[k] = gs[j]; gs[j] = t;
   }
-  // the five - fried, if this is that boot
-  for (int k = 0; k < N_GUPPY_A; k++) {
-    makeFish(sim.fish[i++], g5 ? g5 : &GUPPY_STRAINS[gs[k]], false, -1, 0, 0);
-    if (sim.ebiDay) sim.fish[i - 1].cfg = &EBIFRY;
-  }
-  // the three: the card's fish first, then whatever this place was dealt
+
+  static const int PLACE_N[N_PLACES] = { N_MATE, N_GUPPY_A, N_GUPPY_B, 3, 2 };
+  // the card's fish take the guppies' three first
   const int nCard = CARDFISH.count < N_GUPPY_B ? CARDFISH.count : N_GUPPY_B;
-  for (int k = 0; k < nCard; k++)
-    makeFish(sim.fish[i++], &CARDFISH, false, -1, 0, 0);
-  for (int k = nCard; k < N_GUPPY_B; k++)
-    makeFish(sim.fish[i++], g3 ? g3 : &GUPPY_STRAINS[gs[N_GUPPY_A + k]], false, -1, 0, 0);
-  for (int k = 0; k < 3; k++) {
-    makeFish(sim.fish[i++], mid, false, -1, 0, 0);
-    Fish& nf = sim.fish[i - 1];
-    if (mid == &TRANSLUCENT) {             // start in the shoal, facing its way
-      nf.x = clampf(sim.tgcX + nf.holdX, VIEW::x0 + 4, VIEW::x1 - 4);
-      nf.y = clampf(sim.tgcY + nf.holdY, mid->yLo, mid->yHi);
-      nf.heading = sim.tgcDir > 0 ? 0.0f : (float)M_PI;
-      nf.yaw = nf.heading;
-      nf.prevHeading = nf.heading;
-      for (int q = 0; q < BONES; q++) {
-        nf.bones[q].a = nf.heading;
-        nf.bones[q].x = nf.x - fcos(nf.heading) * q * mid->spacing;
-        nf.bones[q].y = nf.y;
+  for (int p = 0; p < N_PLACES; p++) {
+    const uint8_t c = pc[p];
+    int k = 0;
+    if (p == 2)
+      for (; k < nCard; k++) makeFish(sim.fish[i++], &CARDFISH, false, -1, 0, 0);
+    for (; k < PLACE_N[p]; k++) {
+      const SpeciesCfg* cfg = cfgForCode(c);
+      if (!cfg) cfg = &GUPPY_STRAINS[gs[gnext++ % ng]];     // guppies / ebi-fry
+      // neons join the shoals, wherever they were dealt
+      if (c == FC_NEO) {
+        const int sid = (N_NEON + k) % N_SCHOOLS;
+        makeFish(sim.fish[i++], cfg, true, sid, sim.school[sid].x, sim.school[sid].y);
+      } else {
+        makeFish(sim.fish[i++], cfg, false, -1, 0, 0);
       }
-      nf.mirror = sim.tgcDir;
-      nf.ownDir = sim.tgcDir;
-      nf.trail.reset();
-      for (int q = Trail::CAP - 1; q >= 0; q--)
-        nf.trail.push(nf.x - fcos(nf.heading) * q * 0.5f, nf.y);
+      Fish& nf = sim.fish[i - 1];
+      if (c == FC_EBI) nf.cfg = &EBIFRY;
+      if (c == FC_TGC) {                     // start in the shoal, facing its way
+        nf.x = clampf(sim.tgcX + nf.holdX, VIEW::x0 + 4, VIEW::x1 - 4);
+        nf.y = clampf(sim.tgcY + nf.holdY, cfg->yLo, cfg->yHi);
+        nf.heading = sim.tgcDir > 0 ? 0.0f : (float)M_PI;
+        nf.yaw = nf.heading;
+        nf.prevHeading = nf.heading;
+        for (int q = 0; q < BONES; q++) {
+          nf.bones[q].a = nf.heading;
+          nf.bones[q].x = nf.x - fcos(nf.heading) * q * cfg->spacing;
+          nf.bones[q].y = nf.y;
+        }
+        nf.mirror = sim.tgcDir;
+        nf.ownDir = sim.tgcDir;
+        nf.trail.reset();
+        for (int q = Trail::CAP - 1; q >= 0; q--)
+          nf.trail.push(nf.x - fcos(nf.heading) * q * 0.5f, nf.y);
+      }
     }
   }
-  for (int k = 0; k < 2; k++)
-    makeFish(sim.fish[i++], bottom, false, -1, 0, 0);
   sim.n = i;
-  Serial.printf("%d fish: %d neons, %d %s, %d %s, %d from the card + %d %s, %d %s, %d %s\n",
-                sim.n, N_NEON, N_MATE, mate->label,
-                N_GUPPY_A, sim.ebiDay ? "EBI FRY" : (g5 ? g5->label : "GUPPY"),
-                nCard, N_GUPPY_B - nCard, g3 ? g3->label : "GUPPY",
-                3, mid->label, 2, bottom->label);
+  Serial.printf("%d fish: %d neons | 1: %d %s%s | 2: %d %s%s | 3: %d card + %d %s%s"
+                " | 4: %d %s%s | 5: %d %s%s\n",
+                sim.n, N_NEON,
+                PLACE_N[0], CODE_NAME[pc[0]], gForce[0] ? "*" : "",
+                PLACE_N[1], CODE_NAME[pc[1]], gForce[1] ? "*" : "",
+                nCard, PLACE_N[2] - nCard, CODE_NAME[pc[2]], gForce[2] ? "*" : "",
+                PLACE_N[3], CODE_NAME[pc[3]], gForce[3] ? "*" : "",
+                PLACE_N[4], CODE_NAME[pc[4]], gForce[4] ? "*" : "");
 
   for (int m = 0; m < N_MOTES; m++) {
     sim.motes[m] = { rnd(10, 310), rnd(VIEW::ymap(22), VIEW::ymap(128)),

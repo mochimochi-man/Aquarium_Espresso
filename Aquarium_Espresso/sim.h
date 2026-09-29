@@ -180,10 +180,10 @@ static const int N_SCHOOLS = 3;
 // and never changed afterwards, so the tank you switch on is the tank you
 // watch:
 //
-//   15 neon tetras       always
-//    5 of one of         Amano shrimp, silver hatchet, green puffer, sailfin
-//                        molly, platy, striped panchax, nothobranchius
-//                        (equal odds)
+//   10 neon tetras       always
+//    5 of one of         neon tetras (joining the shoals), Amano shrimp,
+//                        silver hatchet, green puffer, sailfin molly, platy,
+//                        striped panchax, nothobranchius (equal odds)
 //    5 of one of         guppies (twice the odds of each other kind), or one
 //                        of the six fish above; and on about one boot in
 //                        twenty, guppies that are ebi-fry
@@ -193,8 +193,7 @@ static const int N_SCHOOLS = 3;
 //    3 of one of         black tetras, translucent glass catfish (even odds)
 //    2 of one of         corydoras, clown loaches (even odds)
 //
-// The two choices of six may land on the same kind; then there are simply
-// more of it.
+// No kind is dealt to more than one of these places.
 //
 // So the stocking is a runtime number (`Sim::n`) and this is only the size of
 // the array.
@@ -211,7 +210,7 @@ static const float SCARE_MEAN = 8.0f;
 static const float SCARE_MEAN = 1500.0f;
 #endif
 
-static const int N_NEON = 15;
+static const int N_NEON = 10;
 static const int N_MATE = 5;           // the five that share the neons' boot
 static const int N_FISH = N_NEON + N_MATE + 8 + 3 + 2;
 
@@ -219,9 +218,8 @@ static const int N_FISH = N_NEON + N_MATE + 8 + 3 + 2;
 // one. More than one reads as a shoal of the same drawing, which is exactly
 // what the aquariums this imitates looked like.
 //
-// They are not extra fish. Each one takes a guppy's place - same water, same
-// size, same way of swimming, so the tank stays the density it was designed
-// at and the card cannot slowly silt it up.
+// They are not extra fish. Each one takes a place in place 3 (the guppies'
+// three), so the tank stays the density it was designed at.
 static const int CARD_MIN = 1, CARD_MAX = 3;
 static const int N_GUPPY = 8;                  // 2+2+2+1+1 across the strains
 static const int N_GUPPY_A = 5, N_GUPPY_B = 3; // the two places they are split into
@@ -282,6 +280,22 @@ static const float TRIG_WRAP = 200.0f * 2.0f * (float)M_PI;
 // five comes up as guppies already fried, and stays that way for the whole
 // session.
 static const float GAG_CHANCE = 0.05f;
+
+// --- choosing what goes in each place, over the serial line -----------------
+// The five places, in order: 1 the neons' five, 2 the guppies' five, 3 the
+// guppies' three, 4 the black tetras' three, 5 the corydoras' two. Each can be
+// left to chance (RND) or set to a kind; a set place takes any kind at all,
+// whatever it would normally be dealt. The Aquarium_Espresso.ino console
+// reads and writes these and keeps them in NVS.
+enum FishCode : uint8_t {
+  FC_RND = 0, FC_GPY, FC_EBI, FC_NEO, FC_SHR, FC_HAT, FC_PUF, FC_MOL, FC_PLA,
+  FC_PAN, FC_NOT, FC_BLK, FC_TGC, FC_COR, FC_LOA, FC_COUNT
+};
+static const int N_PLACES = 5;
+extern uint8_t gForce[N_PLACES];
+const char* fishCodeName(uint8_t code);
+const char* fishCodeLabel(uint8_t code);
+int fishCodeParse(const char* s);          // -1 if not a code
 
 void makeSim(Sim& sim);
 void stepSim(Sim& sim, float dt);

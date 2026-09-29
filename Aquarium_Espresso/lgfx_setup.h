@@ -18,7 +18,7 @@
 
 // 80MHz halves the full-frame transfer (31ms -> 15ms). Drop back to 40000000
 // if a longer/looser harness starts showing torn or speckled pixels.
-#define TFT_SPI_FREQ 20000000
+#define TFT_SPI_FREQ 40000000
 
 class LGFX : public lgfx::LGFX_Device {
     lgfx::Panel_ST7789 _panel;

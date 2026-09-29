@@ -165,10 +165,10 @@ static bool reduceToSprite(const uint8_t* src, uint32_t sw, uint32_t sh) {
   return true;
 }
 
-bool cardLoad() {
+static bool cardLoadAt(uint32_t freq) {
   static SPIClass sdSPI(HSPI);
   sdSPI.begin(SD_SCLK, SD_MISO, SD_MOSI, SD_CS);
-  if (!SD.begin(SD_CS, sdSPI, SD_FREQ)) {
+  if (!SD.begin(SD_CS, sdSPI, freq)) {
     Serial.println("card: no SD card (tank runs without one)");
     sdSPI.end();
     return false;
@@ -231,4 +231,16 @@ bool cardLoad() {
     Serial.printf("card: %s is in the tank\n", CARD_FILE);
   }
   return ok;
+}
+
+// A card that is there can still fail a read at power-up - the header comes
+// back as garbage ("not a PNG") on some boots and the tank quietly runs without
+// the drawing. So it is tried again, slower each time, before giving up.
+bool cardLoad() {
+  static const uint32_t FREQS[] = { SD_FREQ, 10000000, 4000000 };
+  for (uint32_t f : FREQS) {
+    if (cardLoadAt(f)) return true;
+    delay(50);
+  }
+  return false;
 }

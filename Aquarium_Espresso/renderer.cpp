@@ -401,24 +401,16 @@ static void IRAM_ATTR drawCard(const Rig& rig, const Fish& f, float offX) {
   const RGBA8* spr = rig.spr;
   if (!spr) return;
 
+  // The card is laid along the body's bones, like every other fish: they sit
+  // on the head's path, so when it comes about the card follows round the
+  // same curve - foreshortened where that runs into the depth of the tank,
+  // and seen from behind (mirrored) where it has already come round, the tail
+  // last. Sampled head to tail in short slices; each slice fills the screen
+  // columns between its two ends, and the tail end is drawn first so the
+  // near half of a fold is on top.
   const float sf = f.sf;
-  // cos gives the width and which face is showing; sin says how far round it
-  // is, which is how strong the near/far gradient should be
-  const float flip = fcos(f.turn);
-  const float st   = fsin(f.turn);
-  const float mir  = (flip >= 0.0f) ? 1.0f : -1.0f;
-  const float ax = f.x + offX;           // the hinge, at the leading edge
-  const float cy = f.y;
-  const float wide = CARD_W * sf * fabsf(flip);   // the whole card, not half
   const float halfH = CARD_H * 0.5f * sf;
-  if (wide < 0.7f) return;               // edge-on: there is nothing to draw
-
-  // A drawing has no notion of pitch, so the card just leans the way it is
-  // travelling. Folded through the mirror so it never ends up reading upside
-  // down when the fish turns around.
-  const float lean = clampf(fsin(f.heading), -0.85f, 0.85f) * 0.42f * mir;
-
-  const float lg = fishLight((int)ax, (int)cy);
+  const float lg = fishLight((int)(f.x + offX), (int)f.y);
   const float h = hazeFor(sf), k = 1.0f - h;
   const float PR = lg * k * (31.0f / 255.0f);
   const float PG = lg * k * (63.0f / 255.0f);
@@ -426,91 +418,86 @@ static void IRAM_ATTR drawCard(const Rig& rig, const Fish& f, float offX) {
   const float HR = HAZE_R8 * lg * h * (31.0f / 255.0f);
   const float HG = HAZE_G8 * lg * h * (63.0f / 255.0f);
   const float HB = HAZE_B8 * lg * h * (31.0f / 255.0f);
-
-  // The body trails behind the hinge, so which side of it the card occupies
-  // depends on which way it is facing.
-  int ix0, ix1;
-  if (mir > 0) { ix0 = (int)floorf(ax - wide); ix1 = (int)ceilf(ax) + 1; }
-  else         { ix0 = (int)floorf(ax);        ix1 = (int)ceilf(ax + wide) + 1; }
-  if (ix0 < 0) ix0 = 0;
-  if (ix1 > FB_W) ix1 = FB_W;
-
-  const float invWide = 1.0f / wide;
   const float beat = f.beat;
 
-  for (int x = ix0; x < ix1; x++) {
-    // How far behind the hinge this screen column is, in screen pixels, and
-    // then as a fraction of the body. Both faces measure it the same way; only
-    // the direction it runs in changes.
-    const float d = (mir > 0) ? (ax - ((float)x + 0.5f))
-                              : (((float)x + 0.5f) - ax);
-    const float q = d * invWide;                 // 0 at the head, 1 at the tail
-    if (q < 0.0f || q >= 1.0f) continue;
+  auto along = [&](float q, float& x, float& y) {   // q: 0 head .. 1 tail
+    float t = q * (BONES - 1);
+    int b = (int)t;
+    if (b > BONES - 2) b = BONES - 2;
+    const float u = t - b;
+    x = f.bones[b].x + (f.bones[b + 1].x - f.bones[b].x) * u + offX;
+    y = f.bones[b].y + (f.bones[b + 1].y - f.bones[b].y) * u;
+  };
 
-    // the art is drawn head at +x, so the leading edge is its right-hand side
-    const float u = (1.0f - q) * CARD_W;
-    const float t = q;
-    const float ph = beat - t * CARD_WAVE_K;
-    const float wsin = fsin(ph);
+  const int SLICES = CARD_W * 2;
+  for (int si = SLICES - 1; si >= 0; si--) {
+    const float qa = (float)si / SLICES, qb = (float)(si + 1) / SLICES;
+    float xa, ya, xb, yb;
+    along(qa, xa, ya);
+    along(qb, xb, yb);
+    int ix0 = (int)floorf(fminf(xa, xb)), ix1 = (int)ceilf(fmaxf(xa, xb));
+    if (ix1 <= ix0) ix1 = ix0 + 1;                // edge-on: still one column
+    if (ix0 < 0) ix0 = 0;
+    if (ix1 > FB_W) ix1 = FB_W;
+    const float span = xb - xa;
+    for (int x = ix0; x < ix1; x++) {
+      // where along the card this column is, and the card column there
+      float w = (fabsf(span) > 1e-3f) ? ((float)x + 0.5f - xa) / span : 0.5f;
+      w = clampf(w, 0.0f, 1.0f);
+      const float q = qa + (qb - qa) * w;
+      const float cy = ya + (yb - ya) * w;
+      const float uu = (1.0f - q) * (CARD_W - 1);   // art: head at +x
+      int u0 = (int)uu;
+      if (u0 > CARD_W - 1) u0 = CARD_W - 1;
+      const float fu = uu - u0;
+      const int u1 = (u0 + 1 < CARD_W) ? u0 + 1 : u0;
 
-    // The lean pivots on the hinge too, so the nose holds its height while the
-    // tail rides up and down.
-    const float dy = CARD_WAVE_AMP * t * t * wsin * CARD_H * sf
-                   + ((float)x + 0.5f - ax) * lean;
-    // -1 at the left edge of where the card is on screen, +1 at the right
-    const float dn = mir * (1.0f - 2.0f * q);
-    const float sy = (1.0f - CARD_SQUASH * t * fabsf(fcos(ph)))
-                   * (1.0f + CARD_PERSP * st * dn);
+      // the ripple running down it, growing towards the tail
+      const float ph = beat - q * CARD_WAVE_K;
+      const float dy = CARD_WAVE_AMP * q * q * fsin(ph) * CARD_H * sf;
+      const float sy = 1.0f - CARD_SQUASH * q * fabsf(fcos(ph));
+      const float top = cy + dy - halfH * sy;
+      const float colH = halfH * 2.0f * sy;
+      if (colH < 0.5f) continue;
+      const float invH = (float)CARD_H / colH;
 
-    const float top = cy + dy - halfH * sy;
-    const float colH = halfH * 2.0f * sy;
-    if (colH < 0.5f) continue;
-    const float invH = (float)CARD_H / colH;
+      int iy0 = (int)floorf(top), iy1 = (int)ceilf(top + colH) + 1;
+      if (iy0 < gClipY0[cid]) iy0 = gClipY0[cid];
+      if (iy1 > gClipY1[cid]) iy1 = gClipY1[cid];
 
-    int iy0 = (int)floorf(top), iy1 = (int)ceilf(top + colH) + 1;
-    if (iy0 < gClipY0[cid]) iy0 = gClipY0[cid];
-    if (iy1 > gClipY1[cid]) iy1 = gClipY1[cid];
+      for (int y = iy0; y < iy1; y++) {
+        const float v = ((float)y + 0.5f - top) * invH - 0.5f;
+        if (v <= -1.0f || v >= (float)CARD_H) continue;
+        int v0 = (int)floorf(v);
+        const float fv = v - v0;
+        int v1 = v0 + 1;
+        if (v0 < 0) v0 = 0;
+        if (v1 > CARD_H - 1) v1 = CARD_H - 1;
+        if (v0 > CARD_H - 1) v0 = CARD_H - 1;
 
-    int u0 = (int)u;
-    if (u0 > CARD_W - 1) u0 = CARD_W - 1;
-    const float fu = u - u0;
-    const int u1 = (u0 + 1 < CARD_W) ? u0 + 1 : u0;
-
-    for (int y = iy0; y < iy1; y++) {
-      const float v = ((float)y + 0.5f - top) * invH - 0.5f;
-      if (v <= -1.0f || v >= (float)CARD_H) continue;
-      int v0 = (int)floorf(v);
-      const float fv = v - v0;
-      int v1 = v0 + 1;
-      if (v0 < 0) v0 = 0;
-      if (v1 > CARD_H - 1) v1 = CARD_H - 1;
-      if (v0 > CARD_H - 1) v0 = CARD_H - 1;
-
-      const RGBA8& p00 = spr[v0 * CARD_W + u0];
-      const RGBA8& p10 = spr[v0 * CARD_W + u1];
-      const RGBA8& p01 = spr[v1 * CARD_W + u0];
-      const RGBA8& p11 = spr[v1 * CARD_W + u1];
-
-      const float w00 = (1 - fu) * (1 - fv), w10 = fu * (1 - fv);
-      const float w01 = (1 - fu) * fv,       w11 = fu * fv;
-
-      // premultiplied, so the transparent border cannot bleed colour inwards
-      const float a = p00.a * w00 + p10.a * w10 + p01.a * w01 + p11.a * w11;
-      if (a < 4.0f) continue;
-      const float r = p00.r * p00.a * w00 + p10.r * p10.a * w10
-                    + p01.r * p01.a * w01 + p11.r * p11.a * w11;
-      const float g = p00.g * p00.a * w00 + p10.g * p10.a * w10
-                    + p01.g * p01.a * w01 + p11.g * p11.a * w11;
-      const float b = p00.b * p00.a * w00 + p10.b * p10.a * w10
-                    + p01.b * p01.a * w01 + p11.b * p11.a * w11;
-
-      const float ia = 1.0f / 255.0f;
-      const int al = (int)(a * (32.0f / 255.0f) + 0.5f);
-      px_blend_pm(x, y,
-                  (int)(r * ia * PR + a * ia * HR),
-                  (int)(g * ia * PG + a * ia * HG),
-                  (int)(b * ia * PB + a * ia * HB),
-                  al > 32 ? 32 : al);
+        const RGBA8& p00 = spr[v0 * CARD_W + u0];
+        const RGBA8& p10 = spr[v0 * CARD_W + u1];
+        const RGBA8& p01 = spr[v1 * CARD_W + u0];
+        const RGBA8& p11 = spr[v1 * CARD_W + u1];
+        const float w00 = (1 - fu) * (1 - fv), w10 = fu * (1 - fv);
+        const float w01 = (1 - fu) * fv,       w11 = fu * fv;
+        // premultiplied, so the transparent border cannot bleed colour inwards
+        const float a = p00.a * w00 + p10.a * w10 + p01.a * w01 + p11.a * w11;
+        if (a < 4.0f) continue;
+        const float r = p00.r * p00.a * w00 + p10.r * p10.a * w10
+                      + p01.r * p01.a * w01 + p11.r * p11.a * w11;
+        const float g = p00.g * p00.a * w00 + p10.g * p10.a * w10
+                      + p01.g * p01.a * w01 + p11.g * p11.a * w11;
+        const float b = p00.b * p00.a * w00 + p10.b * p10.a * w10
+                      + p01.b * p01.a * w01 + p11.b * p11.a * w11;
+        const float ia = 1.0f / 255.0f;
+        const int al = (int)(a * (32.0f / 255.0f) + 0.5f);
+        px_blend_pm(x, y,
+                    (int)(r * ia * PR + a * ia * HR),
+                    (int)(g * ia * PG + a * ia * HG),
+                    (int)(b * ia * PB + a * ia * HB),
+                    al > 32 ? 32 : al);
+      }
     }
   }
 }
