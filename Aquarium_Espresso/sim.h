@@ -55,7 +55,7 @@ struct Trail {
   int idx(int back) const { return (head - back + CAP * 2) % CAP; }
 };
 
-struct Bone { float x, y, a; };
+struct Bone { float x, y, a; float z; };   // z: depth along the path (drawing order)
 
 // Individual habits. The browser build gives every fish the same wandering
 // rule, which reads as a screensaver; a tank reads as alive because a few
@@ -209,6 +209,9 @@ static const float SCARE_MEAN = 8.0f;
 #else
 static const float SCARE_MEAN = 1500.0f;
 #endif
+
+// Debug build: one sailfin molly alone in the tank. 0 for normal use.
+#define DEBUG_ONE_MOLLY 0
 
 static const int N_NEON = 10;
 static const int N_MATE = 5;           // the five that share the neons' boot

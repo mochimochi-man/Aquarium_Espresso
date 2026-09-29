@@ -119,10 +119,38 @@ static void IRAM_ATTR drawSegment(const Rig& rig, const Fish& f, int b,
   const float gsf = sf * f.lenScale;               // drawn size (depth + surface copies)
   const float full = segW * gsf;
   const float fore = clampf(slen / (full > 0.1f ? full : 0.1f), 0.22f, 1.0f);
-  if (fabsf(sdx) > 0.15f * full) mirror = (sdx >= 0) ? 1.0f : -1.0f;
+  // A segment foreshortened almost to nothing mid-turn still points the way it
+  // points: its direction comes from a wider span of the bones around it, not
+  // from the fish's overall heading - which is the *new* way while this part
+  // of the body, the tail especially, is still on its way round.
+  float ddx = sdx, ddy = sdy;
+  if (slen <= 0.25f * full) {
+    const Bone& wa = f.bones[b > 0 ? b - 1 : 0];
+    const Bone& wb = f.bones[b + 2 < BONES ? b + 2 : BONES - 1];
+    ddx = wa.x - wb.x; ddy = wa.y - wb.y;
+  }
+  const float dl = sqrtf(ddx * ddx + ddy * ddy);
+  if (fabsf(ddx) > 0.15f * dl && dl > 0.05f * full) mirror = (ddx >= 0) ? 1.0f : -1.0f;
   if (f.vflip) mirror = -mirror;                   // seen in the surface, belly up
-  float ang = (slen > 0.25f * full) ? atan2f(sdy, sdx)
+  float ang = (dl > 0.05f * full) ? atan2f(ddy, ddx)
             : ((mirror == f.mirror) ? f.heading : (float)M_PI - f.heading);
+  // A fish nose-on to the glass mid-turn, climbing or dropping a little, has
+  // a segment whose screen direction is nearly straight up or down - and the
+  // sprite laid along that stood the part on end like a hook. Seen nose-on a
+  // fish is short, not upright, so the tilt a segment is drawn at is held to
+  // the fish's own climb plus a little.
+  {
+    const float lim = fabsf(f.pitch) + 0.15f;
+    if (dl > 0.05f * full) {
+      float tilt = atan2f(ddy, fabsf(ddx) > 1e-4f ? fabsf(ddx) : 1e-4f);
+      if (tilt > lim || tilt < -lim) {
+        tilt = clampf(tilt, -lim, lim);
+        // which way along x it points: its own, or the facing when it has none
+        const float sx = (fabsf(ddx) > 0.15f * dl) ? ddx : (f.mirror);
+        ang = (sx >= 0) ? tilt : (float)M_PI - tilt;
+      }
+    }
+  }
   int srcX = (int)(W - (b + 1) * segW);
 
   // The browser evaluates the undulation once per bone segment, so the wave is
@@ -221,14 +249,10 @@ static void IRAM_ATTR drawSegment(const Rig& rig, const Fish& f, int b,
   if (ix0 >= ix1 || iy0 >= iy1) return;
 
   const RGBA8* spr = rig.spr;
-  // The sailfin molly's sail folds. Everything above the line where it meets
-  // the back is squashed down onto that line by `dorsal`, and swept back as
-  // it goes - a laid-down fin lies along the body, it does not just get
-  // shorter. Done as a remap of the sample: a pixel `d` rows above the back
-  // shows the sail from d/dorsal rows up, taken from further forward.
+  // The sailfin molly's sail is not drawn with the body: cut into the body's
+  // segments it came apart at every joint when the fish bent. drawSail() lays
+  // it along the back in one piece instead; here it is left out.
   const int8_t* sail = (c->key == SP_MOLLY) ? MOLLY_DORSAL : nullptr;
-  const float sailInv = 1.0f / (f.dorsal > 0.2f ? f.dorsal : 0.2f);
-  const float sailLay = (1.0f - f.dorsal) * 1.3f;
   const float invDw = 1.0f / dw;
   const float invSY = 1.0f / sY;
   const float uScale = invDw * segW;
@@ -326,14 +350,7 @@ static void IRAM_ATTR drawSegment(const Rig& rig, const Fish& f, int b,
         int art = hit - biasVal;
         if (art < 0 || art >= H) continue;
         int sc = srcX + col;
-        if (sail && sail[sc] >= 0 && art * 4 + 2 < sail[sc]) {
-          const float base = sail[sc] * 0.25f;
-          const float dsrc = (base - (art + 0.5f)) * sailInv;
-          const int sr = (int)(base - dsrc + 4096.0f) - 4096;
-          const int sc2 = sc + (int)(dsrc * sailLay);
-          if (sr < 0 || sc2 >= W || sail[sc2] < 0 || sr * 4 + 2 >= sail[sc2]) continue;
-          art = sr; sc = sc2;
-        }
+        if (sail && sail[sc] >= 0 && art * 4 + 2 < sail[sc]) continue;
 
         const RGBA8& sp = spr[art * W + sc];
         if (!sp.a) continue;
@@ -347,6 +364,179 @@ static void IRAM_ATTR drawSegment(const Rig& rig, const Fish& f, int b,
       px_blend_pm(x, y, (int)(ar * PR + aa * HR + 0.5f),
                         (int)(ag * PG + aa * HG + 0.5f),
                         (int)(ab * PB + aa * HB + 0.5f), al);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The sailfin molly's sail, in one piece.
+//
+// Its foot is laid along the back as the back actually lies - interpolated
+// along the bones, with the body's own wave - and it rises from there along
+// the local "up", which also turns smoothly from column to column. So however
+// the body bends the sail bends with it and never splits.
+//
+// It folds with `dorsal`: its height shrinks towards the back, and it lies
+// back towards the tail as it goes down - a lowered fin lies along the body,
+// it does not just get shorter.
+//
+// Drawn as one thin textured strip per sprite column between that column's
+// foot and top, each strip a small parallelogram mapped back to the sprite.
+// ---------------------------------------------------------------------------
+static void IRAM_ATTR drawSail(const Rig& rig, const Fish& f, float sY, float sf,
+                               int biasVal, float drift, float offX) {
+  const SpeciesCfg* c = f.cfg;
+  const int W = c->W, H = c->H;
+  const RGBA8* spr = rig.spr;
+  const int8_t* sail = MOLLY_DORSAL;
+  const float mid = (H - 1) * 0.5f;
+  const float fold = f.dorsal > 0.2f ? f.dorsal : 0.2f;
+  const float lay = (1.0f - f.dorsal) * 1.3f;
+  const int cid = xPortGetCoreID();
+
+  // the body's wave, as drawSegment() has it
+  const float kappa = (float)(M_PI * 2) / (2.6f * W);
+  const float sweep = fsin(f.beat * 0.37f + f.phase) * 0.25f;
+  const float spd = (0.10f + 0.60f * f.speedNorm + f.thrash * 1.4f) * sY;
+
+  // a point on the back at arc s (sprite px behind the head), and its heading
+  auto spineAt = [&](float s, float& x, float& y) {
+    float t = s / c->spacing;
+    if (t < 0) t = 0;
+    int b = (int)t;
+    if (b > BONES - 2) b = BONES - 2;
+    const float u = t - b;
+    x = f.bones[b].x + (f.bones[b + 1].x - f.bones[b].x) * u + offX;
+    y = f.bones[b].y + (f.bones[b + 1].y - f.bones[b].y) * u;
+  };
+
+  const float lg = fishLight((int)(f.x + offX), (int)f.y);
+  const float h = f.dry ? 0.0f : hazeFor(sf), k = 1.0f - h;
+  const float am = f.alphaMul;
+  const float PR = 31.0f / 255.0f * lg * k * am, PG = 63.0f / 255.0f * lg * k * am;
+  const float PB = 31.0f / 255.0f * lg * k * am;
+  const float HR = HAZE_R8 * 31.0f / 255.0f * lg * h * am;
+  const float HG = HAZE_G8 * 63.0f / 255.0f * lg * h * am;
+  const float HB = HAZE_B8 * 31.0f / 255.0f * lg * h * am;
+
+  // One "up" for the whole sail, from the chord of the back under it. Taking
+  // it column by column from the bones made the rays fan out every which way
+  // as the body bent - the bones kink at the joints. The foot still follows
+  // the back exactly; only the direction the rays stand in is shared.
+  float tx, ty;
+  {
+    int cf = W - 1, cr = 0;                        // the sail's front and rear columns
+    while (cf > 0 && sail[cf] < 0) cf--;
+    while (cr < W - 1 && sail[cr] < 0) cr++;
+    float px, py, qx, qy;
+    spineAt((float)(W - 1 - cf), px, py);
+    spineAt((float)(W - 1 - cr), qx, qy);
+    tx = px - qx; ty = py - qy;
+    float tl = sqrtf(tx * tx + ty * ty);
+    if (tl < 1e-3f) { tx = f.mirror; ty = 0; tl = 1; }
+    tx /= tl; ty /= tl;
+  }
+  float mir = (fabsf(tx) > 0.15f) ? (tx >= 0 ? 1.0f : -1.0f) : f.mirror;
+  if (f.vflip) mir = -mir;
+  // local "down" in the sprite is (-ty, tx) * mir on screen
+  const float dnx = -ty * mir, dny = tx * mir;
+  // While the body is coming round, the back under the sail is foreshortened
+  // and its two ends do not yet agree which way the fish faces - and a sail
+  // stood up on that sticks out of the side of the fish. A sail seen that
+  // nearly end-on is a sliver anyway, so it is lowered until the back under
+  // it is laid out broadside again.
+  float showSail;
+  {
+    int cf = W - 1, cr = 0;
+    while (cf > 0 && sail[cf] < 0) cf--;
+    while (cr < W - 1 && sail[cr] < 0) cr++;
+    float px, py, qx, qy;
+    spineAt((float)(W - 1 - cf), px, py);
+    spineAt((float)(W - 1 - cr), qx, qy);
+    const float got = sqrtf((px - qx) * (px - qx) + (py - qy) * (py - qy));
+    const float full = (float)(cf - cr) * sf * f.lenScale;
+    showSail = clampf((got / (full > 0.1f ? full : 0.1f) - 0.45f) / 0.35f, 0.0f, 1.0f);
+  }
+  if (showSail <= 0.0f) return;
+
+  // foot and top of the sail at sprite column cx
+  struct Edge { float bx, by, tx, ty; float base; };
+  auto edgeAt = [&](int cx, Edge& e) -> bool {
+    const int ci = cx < 0 ? 0 : (cx > W - 1 ? W - 1 : cx);
+    if (sail[ci] < 0) return false;
+    e.base = sail[ci] * 0.25f;
+    const float s = (float)(W - 1 - cx);
+    float ox, oy;
+    spineAt(s, ox, oy);
+    ox += tx * drift; oy += ty * drift;
+    // the body's wave at this column (the sail sits well forward of the fin
+    // proper, so the fan terms do not apply)
+    float t = s / c->spacing;
+    int ti = (int)t; if (ti > BONES - 2) ti = BONES - 2;
+    const float amp = c->A[ti] + (c->A[ti + 1] - c->A[ti]) * (t - ti);
+    const float lat = amp * fsin(f.beat - kappa * s + sweep) * spd;
+    const float footY = (e.base + biasVal - mid) * sY + lat;
+    e.bx = ox + dnx * footY;
+    e.by = oy + dny * footY;
+    // up to the tip: the full height times the fold, swept back as it folds
+    const float hgt = e.base * sY * showSail;
+    e.tx = e.bx - dnx * hgt * fold - tx * hgt * lay;
+    e.ty = e.by - dny * hgt * fold - ty * hgt * lay;
+    return true;
+  };
+
+  for (int cx = 0; cx < W - 1; cx++) {
+    Edge e0, e1;
+    if (!edgeAt(cx, e0) || !edgeAt(cx + 1, e1)) continue;
+    // the strip: origin at this column's foot, U to the next column's foot,
+    // V up this column
+    float ux = e1.bx - e0.bx, uy = e1.by - e0.by;
+    const float vx = e0.tx - e0.bx, vy = e0.ty - e0.by;
+    // Mid-turn the back runs into the depth of the tank and the columns crowd
+    // together, down to nothing - and a strip of no width is not drawn, so the
+    // sail blinked out. Keep each strip at least the width the body keeps
+    // (drawSegment floors its foreshortening at 0.22), along the back.
+    const float minU = 0.22f * sf * f.lenScale;
+    if (ux * ux + uy * uy < minU * minU) { ux = tx * minU; uy = ty * minU; }
+    const float det = ux * vy - uy * vx;
+    if (fabsf(det) < 1e-4f) continue;
+    const float id = 1.0f / det;
+    float xmin = fminf(fminf(e0.bx, e1.bx), fminf(e0.tx, e1.tx));
+    float xmax = fmaxf(fmaxf(e0.bx, e1.bx), fmaxf(e0.tx, e1.tx));
+    float ymin = fminf(fminf(e0.by, e1.by), fminf(e0.ty, e1.ty));
+    float ymax = fmaxf(fmaxf(e0.by, e1.by), fmaxf(e0.ty, e1.ty));
+    int ix0 = (int)floorf(xmin) - 1, ix1 = (int)ceilf(xmax) + 1;
+    int iy0 = (int)floorf(ymin) - 1, iy1 = (int)ceilf(ymax) + 1;
+    if (ix0 < 0) ix0 = 0;
+    if (ix1 > FB_W) ix1 = FB_W;
+    if (iy0 < gClipY0[cid]) iy0 = gClipY0[cid];
+    if (iy1 > gClipY1[cid]) iy1 = gClipY1[cid];
+    for (int y = iy0; y < iy1; y++) {
+      for (int x = ix0; x < ix1; x++) {
+        float ar = 0, ag = 0, ab = 0, aa = 0;
+        for (int ss = 0; ss < SEG_SAMPLES; ss++) {
+          const float dx = x + SS_OX[ss] - e0.bx, dy = y + SS_OY[ss] - e0.by;
+          const float a = (dx * vy - dy * vx) * id;   // across, 0..1
+          const float b = (ux * dy - uy * dx) * id;   // up, 0..1
+          // a hair of overlap between strips so no seam shows through
+          if (a < -0.08f || a > 1.08f || b < 0.0f || b >= 1.0f) continue;
+          const float base = e0.base + (e1.base - e0.base) * clampf(a, 0.0f, 1.0f);
+          int col = cx + (a >= 0.5f ? 1 : 0);
+          int row = (int)(base * (1.0f - b));       // b=0 foot, b=1 row 0
+          if (row < 0 || row >= H || row * 4 + 2 >= sail[col]) continue;
+          const RGBA8& sp = spr[row * W + col];
+          if (!sp.a) continue;
+          const float al = sp.a * (1.0f / 255.0f);
+          ar += sp.r * al; ag += sp.g * al; ab += sp.b * al; aa += al;
+        }
+        if (aa <= 0.004f) continue;
+        int al = (int)(aa * (32.0f / SEG_SAMPLES) * am + 0.5f);
+        if (al <= 0) continue;
+        if (al > 32) al = 32;
+        px_blend_pm(x, y, (int)((ar * PR + aa * HR) / SEG_SAMPLES + 0.5f),
+                          (int)((ag * PG + aa * HG) / SEG_SAMPLES + 0.5f),
+                          (int)((ab * PB + aa * HB) / SEG_SAMPLES + 0.5f), al);
+      }
     }
   }
 }
@@ -539,9 +729,19 @@ static void drawFish(const Rig& rig, const Fish& f, float offX) {
     // the veil streams back from the last bone along the body's axis
     float px[5], py[5];
     const Bone& tb = f.bones[BONES - 1];
-    const float tcx = -fcos(tb.a), tcy = -fsin(tb.a);
     const Bone& tb3 = f.bones[BONES - 2];
     const float tl = sqrtf((tb3.x - tb.x) * (tb3.x - tb.x) + (tb3.y - tb.y) * (tb3.y - tb.y));
+    // The way the tail points - from a wider span of bones when the last
+    // segment is foreshortened to nothing mid-turn, the same way the body
+    // segments take theirs, so the veil does not flip ahead of the tail.
+    float tdx = tb3.x - tb.x, tdy = tb3.y - tb.y;
+    if (tl <= 0.25f * c->spacing * f.sf) {
+      tdx = f.bones[BONES - 3].x - tb.x;
+      tdy = f.bones[BONES - 3].y - tb.y;
+    }
+    const float tdl = sqrtf(tdx * tdx + tdy * tdy);
+    const float tcx = (tdl > 1e-3f) ? -tdx / tdl : -fcos(tb.a);
+    const float tcy = (tdl > 1e-3f) ? -tdy / tdl : -fsin(tb.a);
     const float tfore = clampf(tl / (c->spacing * f.sf), 0.22f, 1.0f);
     for (int k = 0; k <= 4; k++) {
       float back = (-1.5f + k * 1.5f) * tfore * f.sf;
@@ -593,8 +793,25 @@ static void drawFish(const Rig& rig, const Fish& f, float offX) {
   // --- body strips ---------------------------------------------------------
   int64_t _t1 = esp_timer_get_time();
   tVeil[cid] += (uint32_t)(_t1 - _t0);
-  for (int b = 0; b < BONES - 1; b++)
-    drawSegment(rig, f, b, sY, sf, biasVal, drift, offX, mir);
+  // Far segments first. Coming about through the depth of the tank the body
+  // lies round a U, and seen from the side its two ends overlap: drawn head to
+  // tail regardless, the tail - on the far side of the U - landed on top of
+  // the head and stuck out of it. (+z is towards the glass.)
+  int segOrder[BONES - 1];
+  float segZ[BONES - 1];
+  for (int b = 0; b < BONES - 1; b++) {
+    segOrder[b] = b;
+    segZ[b] = f.bones[b].z + f.bones[b + 1].z;
+  }
+  for (int i = 1; i < BONES - 1; i++) {
+    const int k = segOrder[i];
+    int j = i - 1;
+    while (j >= 0 && segZ[segOrder[j]] > segZ[k] + 0.01f) { segOrder[j + 1] = segOrder[j]; j--; }
+    segOrder[j + 1] = k;
+  }
+  for (int i = 0; i < BONES - 1; i++)
+    drawSegment(rig, f, segOrder[i], sY, sf, biasVal, drift, offX, mir);
+  if (c->key == SP_MOLLY) drawSail(rig, f, sY, sf, biasVal, drift, offX);
   int64_t _t2 = esp_timer_get_time();
   tSeg[cid] += (uint32_t)(_t2 - _t1);
 
@@ -671,7 +888,13 @@ static void drawFish(const Rig& rig, const Fish& f, float offX) {
     // stroke under the middle of the body is enough at this size.
     const Bone& ab = f.bones[2];
     const float beat = fsin(f.beat * 3.1f + f.phase) * 0.5f;
-    const float pax = ab.a + mir * (1.9f + beat * 0.5f);
+    // under the belly as this part of the body lies, not by the overall facing
+    float smir = mir;
+    {
+      const float dx = f.bones[1].x - f.bones[3].x;
+      if (fabsf(dx) > 0.6f) smir = (dx >= 0) ? 1.0f : -1.0f;
+    }
+    const float pax = ab.a + smir * (1.9f + beat * 0.5f);
     const float pl = 2.1f * (0.6f + 0.9f * clampf(f.effort, 0.0f, 1.0f));
     lineAA(ab.x + offX, ab.y, ab.x + offX + fcos(pax) * pl, ab.y + fsin(pax) * pl,
            0.6f, hazed(196, 206, 194, lgF, hF), 0.18f);
@@ -698,7 +921,15 @@ static void drawFish(const Rig& rig, const Fish& f, float offX) {
     float flap = fsin(f.beat * (puff ? 6.0f : 2.1f) + f.phase)
                * (0.5f + d.bell + f.flare * 0.4f + (puff ? 0.4f : 0.0f));
     const Bone& pb = f.bones[1];
-    float pa = pb.a + mir * ((float)M_PI_2 + flap * 0.55f);
+    // Which side is "down" here goes by which way this part of the body
+    // points, not by the fish's overall facing: mid-turn the two disagree, and
+    // going by the overall facing flipped the fin over to the back and back.
+    float pmir = mir;
+    {
+      const float dx = f.bones[0].x - f.bones[2].x;
+      if (fabsf(dx) > 0.6f) pmir = (dx >= 0) ? 1.0f : -1.0f;
+    }
+    float pa = pb.a + pmir * ((float)M_PI_2 + flap * 0.55f);
     float pl = (c->key == SP_NEON ? 2.2f : 3.2f) * (1 + d.bell * 0.4f);
     float bx = pb.x + offX + fcos(pb.a) * 1.5f;
     float by = pb.y + fsin(pb.a) * 1.5f;
@@ -713,7 +944,7 @@ static void drawFish(const Rig& rig, const Fish& f, float offX) {
              hazed(235, 150, 110, lgF, hF), 0.60f);
     if (facing < 0.9f) {
       float aa = 0.3f * (1 - facing) + 0.15f;
-      float fa = pb.a - mir * ((float)M_PI_2 + flap * 0.55f);
+      float fa = pb.a - pmir * ((float)M_PI_2 + flap * 0.55f);
       lineAA(bx, by, bx + fcos(fa) * pl * 0.9f, by + fsin(fa) * pl * 0.9f, 0.7f,
              hazed(200, 240, 235, lgF, hF), aa);
     }

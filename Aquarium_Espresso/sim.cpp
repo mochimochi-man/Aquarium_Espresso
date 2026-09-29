@@ -279,6 +279,11 @@ void makeSim(Sim& sim) {
     }
   }
   sim.n = i;
+#if DEBUG_ONE_MOLLY
+  // debug: the tank holds one sailfin molly and nothing else
+  makeFish(sim.fish[0], &SAILFIN, false, -1, 0, 0);
+  sim.n = 1;
+#endif
   Serial.printf("%d fish: %d neons | 1: %d %s%s | 2: %d %s%s | 3: %d card + %d %s%s"
                 " | 4: %d %s%s | 5: %d %s%s\n",
                 sim.n, N_NEON,
@@ -371,6 +376,9 @@ void trailAt(const Trail& tr, float back, float& ox, float& oy, float& oz) {
 // thing in the tank, so it is the one that goes wherever the water goes.
 static const float LIFT_REF_CM = 3.0f;
 
+// How far one joint of the body bends, rad.
+static const float BEND_MAX = 0.40f;
+
 static void stepChain(Fish& f) {
   Trail& tr = f.trail;
   int last = tr.idx(0);
@@ -393,18 +401,55 @@ static void stepChain(Fish& f) {
   // to where the tail's point on the path is - not the way it is pointing
   // now. Pointing somewhere new does not turn the body; swimming there does,
   // so it comes round as it goes rather than before it sets off.
-  float tx, ty, tz;
-  trailAt(tr, (BONES - 1) * sp, tx, ty, tz);
-  const float cx = (f.x - tx) * (1.0f / (BONES - 1));
-  const float cy = (f.y - ty) * (1.0f / (BONES - 1));
+  // The body on the path, in 3D.
+  float P[BONES][3];
+  P[0][0] = f.x; P[0][1] = f.y; P[0][2] = f.z;
+  for (int b = 1; b < BONES; b++) trailAt(tr, b * sp, P[b][0], P[b][1], P[b][2]);
+
+  // ...but a body only bends so far at each joint. Coming about on a tight
+  // curve the path doubles back on itself, and a body laid on it folds into a
+  // hairpin - seen from the side the tail then lies over the head and sticks
+  // out of it. Held to BEND_MAX a joint, the tail swings out round the turn
+  // instead, the way a fish's does.
+  {
+    // Measured from the way the head has actually come, not the way it is
+    // now pointing - pointing somewhere new must not drag the body round
+    // before the fish has swum there.
+    const float cp = fcos(f.pitch);
+    float dp[3] = { P[0][0] - P[1][0], P[0][1] - P[1][1], P[0][2] - P[1][2] };
+    {
+      float l = sqrtf(dp[0] * dp[0] + dp[1] * dp[1] + dp[2] * dp[2]);
+      if (l < 1e-4f) { dp[0] = fcos(f.yaw) * cp; dp[1] = fsin(f.pitch); dp[2] = fsin(f.yaw) * cp; l = 1.0f; }
+      dp[0] /= l; dp[1] /= l; dp[2] /= l;
+    }
+    const float cMax = fcos(BEND_MAX), sMax = fsin(BEND_MAX);
+    for (int b = 2; b < BONES; b++) {
+      float d[3] = { P[b - 1][0] - P[b][0], P[b - 1][1] - P[b][1], P[b - 1][2] - P[b][2] };
+      float dl = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+      if (dl < 1e-4f) { d[0] = dp[0]; d[1] = dp[1]; d[2] = dp[2]; dl = 1.0f; }
+      d[0] /= dl; d[1] /= dl; d[2] /= dl;
+      const float c = d[0] * dp[0] + d[1] * dp[1] + d[2] * dp[2];
+      if (c < cMax) {
+        // turn it back to BEND_MAX from the segment in front, in the same plane
+        float q[3] = { d[0] - dp[0] * c, d[1] - dp[1] * c, d[2] - dp[2] * c };
+        float ql = sqrtf(q[0] * q[0] + q[1] * q[1] + q[2] * q[2]);
+        if (ql < 1e-4f) { q[0] = -dp[2]; q[1] = 0; q[2] = dp[0]; ql = sqrtf(q[0] * q[0] + q[2] * q[2]) + 1e-6f; }
+        for (int i = 0; i < 3; i++) d[i] = dp[i] * cMax + q[i] / ql * sMax;
+      }
+      for (int i = 0; i < 3; i++) { P[b][i] = P[b - 1][i] - d[i] * sp; dp[i] = d[i]; }
+    }
+  }
+
+  const float cx = (f.x - P[BONES - 1][0]) * (1.0f / (BONES - 1));
+  const float cy = (f.y - P[BONES - 1][1]) * (1.0f / (BONES - 1));
   f.bones[0].x = f.x;
   f.bones[0].y = f.y;
+  f.bones[0].z = f.z;
   for (int b = 1; b < BONES; b++) {
-    float px, py, pz;
-    trailAt(tr, b * sp, px, py, pz);
     Bone& bone = f.bones[b];
-    bone.x = px + (f.x - cx * b - px) * kRelax;
-    bone.y = py + (f.y - cy * b - py) * kRelax;
+    bone.x = P[b][0] + (f.x - cx * b - P[b][0]) * kRelax;
+    bone.y = P[b][1] + (f.y - cy * b - P[b][1]) * kRelax;
+    bone.z = P[b][2];
   }
   // A hatchetfish's nose-up lean: the body tipped tail-down about the head.
   // Tail down on whichever side of the head each bone lies - mid-turn the
@@ -422,13 +467,23 @@ static void stepChain(Fish& f) {
   f.bones[0].a = f.heading;
   for (int b = 1; b < BONES; b++) {
     float ddx = f.bones[b - 1].x - f.bones[b].x, ddy = f.bones[b - 1].y - f.bones[b].y;
+    // foreshortened to almost nothing mid-turn: take the direction over a
+    // wider span, not the head's - which already points the new way
+    if (ddx * ddx + ddy * ddy <= 0.04f && b + 1 < BONES) {
+      ddx = f.bones[b - 1].x - f.bones[b + 1].x;
+      ddy = f.bones[b - 1].y - f.bones[b + 1].y;
+    }
     f.bones[b].a = (ddx * ddx + ddy * ddy > 0.04f) ? atan2f(ddy, ddx) : f.bones[b - 1].a;
   }
 }
 
 // How tight a turn is: a fish comes about on a curve of about a third of its
 // own length, swimming round it; it does not spin on the spot.
-static const float TURN_R = 0.22f;
+// It has to be at least a third of its length: half a circle of that is as
+// long as the fish, so the tail is round by the time the head is.
+static const float TURN_R = 0.40f;
+// How fast, in cruises, a fish swims through a reversal.
+static const float TURN_SWIM = 1.6f;
 
 // How far a fish lets its nose go up or down. Hardly at all: a fish swims
 // level and climbs or drops at a shallow angle. Only a real dash to the
@@ -1110,8 +1165,11 @@ static void stepFish(Sim& sim, Fish& f, float dt) {
   // soft wall avoidance - suspended while an act is deliberately holding the
   // fish against a pane, the substrate or the surface
   if (!busy) {
-    if (f.x < VIEW::x0 + 8) f.tx = fmaxf(f.tx, 120.0f);
-    if (f.x > VIEW::x1 - 8) f.tx = fminf(f.tx, 200.0f);
+    // far enough out that the turn itself (TURN_R of its length) fits before
+    // the glass - pinned against a pane it cannot swim round the curve
+    const float room = 8.0f + TURN_R * c->W * f.sf;
+    if (f.x < VIEW::x0 + room) f.tx = fmaxf(f.tx, 120.0f);
+    if (f.x > VIEW::x1 - room) f.tx = fminf(f.tx, 200.0f);
     if (f.y < c->yLo + 4) f.ty = fmaxf(f.ty, c->yLo + (c->yHi - c->yLo) * 0.35f);
     if (f.y > c->yHi - 4) f.ty = fminf(f.ty, c->yHi - (c->yHi - c->yLo) * 0.35f);
   }
@@ -1128,10 +1186,17 @@ static void stepFish(Sim& sim, Fish& f, float dt) {
   // Eased, not a constant rate switched on and off: it winds up into the turn
   // and slows as it comes round to face the new way. A turn that starts and
   // stops dead reads as a jerk at both ends.
-  // how fast it can come round is how fast it is swimming round the curve
-  const float vNow = f.speed * fmaxf(eff, 0.7f);
-  const float maxRate = fminf(c->turnRate * (1.1f + 0.6f * f.speedNorm),
-                              fmaxf(c->turnRate * 0.5f, vNow / (TURN_R * c->W * f.sf)));
+  // How fast it can come round is how fast it is swimming round the curve,
+  // and nothing else. Letting a slow fish turn faster than that tightens the
+  // curve below its own length, and then the head is round before the body
+  // is - the body left folded back beside the head like a hairpin, the tail
+  // sticking out past the snout. A fish coming about swims through it
+  // briskly instead (TURN_SWIM), which is also what keeps the turn quick.
+  const bool reversing = fabsf(dYaw) > 0.4f;
+  const float vTurn = c->baseSpeed * TURN_SWIM;
+  float vNow = f.speed * eff;
+  if (reversing && vNow < vTurn) vNow = vTurn;
+  const float maxRate = fminf(c->turnRate * 2.0f, vNow / (TURN_R * c->W * f.sf));
   const float wantV = clampf(dYaw * 4.0f, -maxRate, maxRate);
   f.yawV += (wantV - f.yawV) * fminf(1.0f, dt * 9.0f);
   float yawStep = f.yawV * dt;
@@ -1182,13 +1247,29 @@ static void stepFish(Sim& sim, Fish& f, float dt) {
   // the glass, it is swimming towards or away from you and barely moves
   // and it keeps swimming while it comes round - that is what carries it
   // round the curve - so the effort does not drop below a cruise mid-turn
-  const float turnBoost = (fabsf(dYaw) > 0.4f && eff < 0.7f && eff > 0.0f)
-                        ? 0.7f / eff : 1.0f;
+  const float swimNow = f.speed * boost;
+  const float turnBoost = (reversing && swimNow < vTurn)
+                        ? vTurn / fmaxf(swimNow, 0.05f) : 1.0f;
   const float vdx = cyaw * fcos(f.pitch), vdy = fsin(f.pitch);
   const float vdz = fsin(f.yaw) * fcos(f.pitch);
-  f.x += (vdx * f.speed * boost * turnBoost + f.burstX + f.sepX + wx) * dt;
-  f.y += (vdy * f.speed * boost * turnBoost + f.burstY + f.sepY + wy) * dt;
+  f.x += vdx * f.speed * boost * turnBoost * dt;
+  f.y += vdy * f.speed * boost * turnBoost * dt;
   f.z += vdz * f.speed * boost * turnBoost * dt;
+  // Being carried - by the air stone's column, by a neighbour's shove, by a
+  // startle - is not swimming. The whole fish goes with it, path and all; if
+  // it went into the path the body would line up with the push, and a fish
+  // lifted by the bubbles stood on end.
+  {
+    const float pdx = (f.burstX + f.sepX + wx) * dt, pdy = (f.burstY + f.sepY + wy) * dt;
+    f.x += pdx;
+    f.y += pdy;
+    Trail& tr = f.trail;
+    for (int q = 0; q < tr.n; q++) {
+      const int k2 = tr.idx(q);
+      tr.x[k2] += pdx;
+      tr.y[k2] += pdy;
+    }
+  }
   f.x = clampf(f.x, VIEW::x0 - 6, VIEW::x1 + 6);
 
   // The layer clamp would undo the lift the moment it applied, so it is held

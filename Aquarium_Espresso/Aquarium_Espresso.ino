@@ -69,6 +69,18 @@ static void recSendFrame(uint32_t periodUs) {
   Serial.write((const uint8_t*)&P, 4);
   Serial.write((const uint8_t*)&sum, 4);
   if (len) Serial.write(jpg, len);
+#if DEBUG_ONE_MOLLY
+  // debug: the first fish's state, so the host can follow it exactly
+  {
+    const Fish& d = sim.fish[0];
+    float st[4 + 2 * BONES + 2];
+    st[0] = d.x; st[1] = d.y; st[2] = d.yaw; st[3] = d.dorsal;
+    for (int b = 0; b < BONES; b++) { st[4 + 2 * b] = d.bones[b].x; st[5 + 2 * b] = d.bones[b].y; }
+    st[4 + 2 * BONES] = d.mirror; st[5 + 2 * BONES] = d.pitch;
+    Serial.write((const uint8_t*)"DBG0", 4);
+    Serial.write((const uint8_t*)st, sizeof(st));
+  }
+#endif
   if (jpg) free(jpg);
   recLeftUs -= periodUs;
   if (recLeftUs <= 0) {
