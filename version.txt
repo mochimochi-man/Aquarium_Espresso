@@ -1,3 +1,4 @@
+1.3.1 - fixed fish display glitches.
 1.3.0 - added serial commands(HELP/SET/RESET/CLEAR), fixed SD Card fish behavior, changed LCD-SPI 40MHz.
 1.2.0 - added 8 fishes, added 2 BG, fixed fish behavior.
 1.0.0 - first release.

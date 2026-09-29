@@ -227,9 +227,29 @@ static void IRAM_ATTR drawSegment(const Rig& rig, const Fish& f, int b,
   float lyBot = dyHi * expMax + latMax + slack;
   if (mirror < 0) { float t = lyTop; lyTop = -lyBot; lyBot = -t; }
 
+  // Where the body bends, neighbouring segments are turned against each other
+  // and on the outside of the bend a wedge opens between them - a deep body
+  // like the molly's showed it as a bite out of the back and the root of the
+  // tail. Each segment reaches past its ends by as much as that wedge is wide
+  // at the body's edge, repeating its end column, so the joints stay closed.
+  float extF = 0.0f, extR = 0.0f;
+  {
+    const float edge = (H * 0.5f + 1.5f) * sY;
+    const float cap = segW * gsf;
+    if (b > 0) {
+      const float an = atan2f(f.bones[b - 1].y - b0.y, f.bones[b - 1].x - b0.x);
+      extF = fminf(cap, edge * fabsf(fsin(an - ang)));
+    }
+    if (b + 2 < BONES) {
+      const float an = atan2f(b1.y - f.bones[b + 2].y, b1.x - f.bones[b + 2].x);
+      extR = fminf(cap, edge * fabsf(fsin(an - ang)));
+    }
+  }
+  const float qx0 = lx0 - extR, qx1 = lx0 + dw + extF;
+
   // world bounding box of the quad
   float xmin = 1e9f, xmax = -1e9f, ymin = 1e9f, ymax = -1e9f;
-  const float cx[4] = { lx0, lx0 + dw, lx0 + dw, lx0 };
+  const float cx[4] = { qx0, qx1, qx1, qx0 };
   const float cy[4] = { lyTop, lyTop, lyBot, lyBot };
   for (int i = 0; i < 4; i++) {
     float wx = tx + cx[i] * ca - cy[i] * sa;
@@ -256,7 +276,6 @@ static void IRAM_ATTR drawSegment(const Rig& rig, const Fish& f, int b,
   const float invDw = 1.0f / dw;
   const float invSY = 1.0f / sY;
   const float uScale = invDw * segW;
-  const float lxEnd = lx0 + dw;
   const float invCa = (fabsf(ca) > 1e-4f) ? 1.0f / ca : 0.0f;
   const float invSa = (fabsf(sa) > 1e-4f) ? 1.0f / sa : 0.0f;
 
@@ -294,11 +313,11 @@ static void IRAM_ATTR drawSegment(const Rig& rig, const Fish& f, int b,
     float lyc = -dxc * sa + dyc * ca;
     float u0 = 0.0f, u1 = (float)(ix1 - ix0);
     if (invCa != 0.0f) {
-      float a0 = (lx0 - lxc) * invCa, a1 = (lxEnd - lxc) * invCa;
+      float a0 = (qx0 - lxc) * invCa, a1 = (qx1 - lxc) * invCa;
       if (a0 > a1) { float t2 = a0; a0 = a1; a1 = t2; }
       if (a0 > u0) u0 = a0;
       if (a1 < u1) u1 = a1;
-    } else if (lxc < lx0 || lxc >= lxEnd) {
+    } else if (lxc < qx0 || lxc >= qx1) {
       continue;
     }
     if (invSa != 0.0f) {
@@ -328,7 +347,7 @@ static void IRAM_ATTR drawSegment(const Rig& rig, const Fish& f, int b,
         float lx = lxRow[ss], ly = lyRow[ss];
         lxRow[ss] += ca;
         lyRow[ss] -= sa;
-        if (lx < lx0 || lx >= lxEnd) continue;
+        if (lx < qx0 || lx >= qx1) continue;
 
         int col = (int)((lx - lx0) * uScale);
         if (col < 0) col = 0;
