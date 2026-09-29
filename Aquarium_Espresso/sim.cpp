@@ -822,7 +822,7 @@ static float stepAct(Sim& sim, Fish& f, float dt) {
     case ACT_HOLD:
       // hanging in open water, fins ticking over, going nowhere
       f.tx = f.holdX + (fcos(f.heading) >= 0 ? 22.0f : -22.0f);
-      f.ty = f.holdY + fsin(sim.tw * 0.7f + f.phase) * 2.0f;
+      f.ty = f.holdY;
       want = 0.05f;
       f.actT -= dt;
       if (f.actT <= 0) { f.act = ACT_SWIM; f.nextAct = rnd(1.5f, 5.0f); }
@@ -888,7 +888,7 @@ static float stepAct(Sim& sim, Fish& f, float dt) {
     case ACT_HOVER:
       // sitting still, pointing along the pane, fins just ticking over
       f.tx = f.holdX + (fcos(f.heading) >= 0 ? 22.0f : -22.0f);
-      f.ty = f.holdY + fsin(sim.tw * 0.9f + f.phase) * 1.5f;
+      f.ty = f.holdY;
       want = 0.045f;
       f.actT -= dt;
       if (f.actT <= 0) { f.act = ACT_SWIM; f.nextAct = rnd(15, 38); }

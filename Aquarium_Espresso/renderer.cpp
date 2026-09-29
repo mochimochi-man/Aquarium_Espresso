@@ -138,7 +138,10 @@ static void IRAM_ATTR drawSegment(const Rig& rig, const Fish& f, int b,
   float latMin = 1e9f, latMax = -1e9f, expMax = 1.0f;
   {
     const float sweep = fsin(f.beat * 0.37f + f.phase) * 0.25f;
-    const float spd = (0.7f + 0.3f * f.speedNorm + f.thrash * 1.4f) * sY;
+    // A tail beats side to side, which from the side is mostly into and out of
+    // the glass; drawn as an up-and-down wave it has to stay small, and all but
+    // vanish when the fish is only drifting.
+    const float spd = (0.10f + 0.60f * f.speedNorm + f.thrash * 1.4f) * sY;
     const float open = f.flare * 0.55f;            // extra fin height
     const float fanSweep = 0.35f + 1.1f * f.flare; // fin-only sweep scale
     const float finSpan = (float)(W - 1) - c->finFrom;
