@@ -234,8 +234,12 @@ static void IRAM_ATTR drawSegment(const Rig& rig, const Fish& f, int b,
   // at the body's edge, repeating its end column, so the joints stay closed.
   float extF = 0.0f, extR = 0.0f;
   {
-    const float edge = (H * 0.5f + 1.5f) * sY;
-    const float cap = segW * gsf;
+    // Only as much as closes the wedge, and never more than a fraction of the
+    // segment as it shows: a foreshortened segment next to a turned one has a
+    // big angle between them, and stretching its end column that far stuck it
+    // out of the fish.
+    const float edge = (H * 0.5f) * sY * 0.6f;
+    const float cap = 0.3f * segW * gsf * fore;
     if (b > 0) {
       const float an = atan2f(f.bones[b - 1].y - b0.y, f.bones[b - 1].x - b0.x);
       extF = fminf(cap, edge * fabsf(fsin(an - ang)));
@@ -950,6 +954,15 @@ static void drawFish(const Rig& rig, const Fish& f, float offX) {
     }
     float pa = pb.a + pmir * ((float)M_PI_2 + flap * 0.55f);
     float pl = (c->key == SP_NEON ? 2.2f : 3.2f) * (1 + d.bell * 0.4f);
+    // Mid-turn the body is foreshortened, and a fin drawn at its full length
+    // off a body that short stuck out of it like a spike; it shortens with the
+    // body round it.
+    {
+      const float hl = sqrtf((f.bones[0].x - f.bones[2].x) * (f.bones[0].x - f.bones[2].x)
+                           + (f.bones[0].y - f.bones[2].y) * (f.bones[0].y - f.bones[2].y));
+      const float fore1 = clampf(hl / (2.0f * c->spacing * f.sf), 0.0f, 1.0f);
+      pl *= 0.25f + 0.75f * fore1;
+    }
     float bx = pb.x + offX + fcos(pb.a) * 1.5f;
     float by = pb.y + fsin(pb.a) * 1.5f;
     if (c->key == SP_NEON)
