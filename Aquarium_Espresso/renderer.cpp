@@ -118,7 +118,11 @@ static void IRAM_ATTR drawSegment(const Rig& rig, const Fish& f, int b,
   const float slen = sqrtf(sdx * sdx + sdy * sdy);
   const float gsf = sf * f.lenScale;               // drawn size (depth + surface copies)
   const float full = segW * gsf;
-  const float fore = clampf(slen / (full > 0.1f ? full : 0.1f), 0.22f, 1.0f);
+  // The last segment carries the tail fin, a broad plate that swings round in
+  // a turn rather than shrinking to a line and growing back out of the root:
+  // it keeps more of its width.
+  const float foreMin = (b == BONES - 2) ? 0.45f : 0.22f;
+  const float fore = clampf(slen / (full > 0.1f ? full : 0.1f), foreMin, 1.0f);
   // A segment foreshortened almost to nothing mid-turn still points the way it
   // points: its direction comes from a wider span of the bones around it, not
   // from the fish's overall heading - which is the *new* way while this part
@@ -816,24 +820,12 @@ static void drawFish(const Rig& rig, const Fish& f, float offX) {
   // --- body strips ---------------------------------------------------------
   int64_t _t1 = esp_timer_get_time();
   tVeil[cid] += (uint32_t)(_t1 - _t0);
-  // Far segments first. Coming about through the depth of the tank the body
-  // lies round a U, and seen from the side its two ends overlap: drawn head to
-  // tail regardless, the tail - on the far side of the U - landed on top of
-  // the head and stuck out of it. (+z is towards the glass.)
-  int segOrder[BONES - 1];
-  float segZ[BONES - 1];
-  for (int b = 0; b < BONES - 1; b++) {
-    segOrder[b] = b;
-    segZ[b] = f.bones[b].z + f.bones[b + 1].z;
-  }
-  for (int i = 1; i < BONES - 1; i++) {
-    const int k = segOrder[i];
-    int j = i - 1;
-    while (j >= 0 && segZ[segOrder[j]] > segZ[k] + 0.01f) { segOrder[j + 1] = segOrder[j]; j--; }
-    segOrder[j + 1] = k;
-  }
-  for (int i = 0; i < BONES - 1; i++)
-    drawSegment(rig, f, segOrder[i], sY, sf, biasVal, drift, offX, mir);
+  // Head to tail. (Drawing far segments first was tried, to keep a tail that
+  // had folded round in front of the head from covering it; the bend limit in
+  // stepChain() stops the fold, and sorting by depth instead hid the tail
+  // behind the body every time it swung away, so it vanished mid-turn.)
+  for (int b = 0; b < BONES - 1; b++)
+    drawSegment(rig, f, b, sY, sf, biasVal, drift, offX, mir);
   if (c->key == SP_MOLLY) drawSail(rig, f, sY, sf, biasVal, drift, offX);
   int64_t _t2 = esp_timer_get_time();
   tSeg[cid] += (uint32_t)(_t2 - _t1);
