@@ -118,23 +118,34 @@ static void IRAM_ATTR drawSegment(const Rig& rig, const Fish& f, int b,
   const float slen = sqrtf(sdx * sdx + sdy * sdy);
   const float gsf = sf * f.lenScale;               // drawn size (depth + surface copies)
   const float full = segW * gsf;
-  // The last segment carries the tail fin, a broad plate that swings round in
-  // a turn rather than shrinking to a line and growing back out of the root:
-  // it keeps more of its width.
-  const float foreMin = (b == BONES - 2) ? 0.45f : 0.22f;
-  const float fore = clampf(slen / (full > 0.1f ? full : 0.1f), foreMin, 1.0f);
+  // (The tail keeps the same floor as the rest: it flips over at its narrowest,
+  // and a wider floor made the tail fin jump across at that moment.)
+  const float fore = clampf(slen / (full > 0.1f ? full : 0.1f), 0.22f, 1.0f);
   // A segment foreshortened almost to nothing mid-turn still points the way it
   // points: its direction comes from a wider span of the bones around it, not
   // from the fish's overall heading - which is the *new* way while this part
   // of the body, the tail especially, is still on its way round.
+  // Blended, not switched at a threshold: switching made the direction jump
+  // the moment the segment grew past it, at the very end of a turn.
   float ddx = sdx, ddy = sdy;
-  if (slen <= 0.25f * full) {
-    const Bone& wa = f.bones[b > 0 ? b - 1 : 0];
-    const Bone& wb = f.bones[b + 2 < BONES ? b + 2 : BONES - 1];
-    ddx = wa.x - wb.x; ddy = wa.y - wb.y;
+  {
+    const float r = slen / (full > 0.1f ? full : 0.1f);
+    float w = (0.40f - r) / 0.25f;                 // 1 when short, 0 from 0.40 up
+    w = w < 0.0f ? 0.0f : (w > 1.0f ? 1.0f : w);
+    if (w > 0.0f) {
+      const Bone& wa = f.bones[b > 0 ? b - 1 : 0];
+      const Bone& wb = f.bones[b + 2 < BONES ? b + 2 : BONES - 1];
+      // the wide span is about twice as long; halve it so the two agree in size
+      const float wx = (wa.x - wb.x) * 0.5f, wy = (wa.y - wb.y) * 0.5f;
+      ddx = sdx + (wx - sdx) * w;
+      ddy = sdy + (wy - sdy) * w;
+    }
   }
   const float dl = sqrtf(ddx * ddx + ddy * ddy);
-  if (fabsf(ddx) > 0.15f * dl && dl > 0.05f * full) mirror = (ddx >= 0) ? 1.0f : -1.0f;
+  // Which way this segment faces is its own business: borrowing the fish's
+  // overall facing while it was near edge-on flipped the tail over and back
+  // again at the end of a turn, once for the fish and once for itself.
+  if (dl > 0.05f * full && fabsf(ddx) > 1e-4f) mirror = (ddx >= 0) ? 1.0f : -1.0f;
   if (f.vflip) mirror = -mirror;                   // seen in the surface, belly up
   float ang = (dl > 0.05f * full) ? atan2f(ddy, ddx)
             : ((mirror == f.mirror) ? f.heading : (float)M_PI - f.heading);
@@ -150,7 +161,7 @@ static void IRAM_ATTR drawSegment(const Rig& rig, const Fish& f, int b,
       if (tilt > lim || tilt < -lim) {
         tilt = clampf(tilt, -lim, lim);
         // which way along x it points: its own, or the facing when it has none
-        const float sx = (fabsf(ddx) > 0.15f * dl) ? ddx : (f.mirror);
+        const float sx = (fabsf(ddx) > 1e-4f) ? ddx : f.mirror;
         ang = (sx >= 0) ? tilt : (float)M_PI - tilt;
       }
     }
