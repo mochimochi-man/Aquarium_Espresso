@@ -918,7 +918,7 @@ static void drawFish(const Rig& rig, const Fish& f, float offX) {
     float smir = mir;
     {
       const float dx = f.bones[1].x - f.bones[3].x;
-      if (fabsf(dx) > 0.6f) smir = (dx >= 0) ? 1.0f : -1.0f;
+      if (fabsf(dx) > 1e-4f) smir = (dx >= 0) ? 1.0f : -1.0f;
     }
     const float pax = ab.a + smir * (1.9f + beat * 0.5f);
     const float pl = 2.1f * (0.6f + 0.9f * clampf(f.effort, 0.0f, 1.0f));
@@ -929,14 +929,25 @@ static void drawFish(const Rig& rig, const Fish& f, float offX) {
     // (not for the hatchetfish, whose eye is well back from the snout and is
     // baked into its sprite - a dot here would sit on its lip)
     if (c->key != SP_HATCHET) {
-    float ex = head.x + offX + hx * 1.0f * sf + mir * hy * 0.9f * sY;
-    float ey = head.y + hy * 1.0f * sf - mir * hx * 0.9f * sY;
+    // on the head as the head segment lies, like the fins
+    float emir = mir, ehx = hx, ehy = hy;
+    {
+      const float dx = f.bones[0].x - f.bones[2].x, dy = f.bones[0].y - f.bones[2].y;
+      if (fabsf(dx) > 1e-4f) emir = (dx >= 0) ? 1.0f : -1.0f;
+      const float lim = fabsf(f.pitch) + 0.15f;
+      const float tilt = clampf(atan2f(dy, fabsf(dx) > 1e-4f ? fabsf(dx) : 1e-4f), -lim, lim);
+      const float ea = (emir > 0) ? tilt : (float)M_PI - tilt;
+      ehx = fcos(ea); ehy = fsin(ea);
+    }
+    float ex = head.x + offX + ehx * 1.0f * sf + emir * ehy * 0.9f * sY;
+    float ey = head.y + ehy * 1.0f * sf - emir * ehx * 0.9f * sY;
     fillRectAA(ex - 0.45f, ey - 0.45f, 0.9f, 0.9f,
              hazed(6, 14, 16, lgF, hF), 0.85f);
-    if (facing < 0.75f) {
-      float a2 = (0.75f - facing) * 1.2f;
-      float ex2 = head.x + offX + hx * 1.1f * sf - mir * hy * 1.0f * sY;
-      float ey2 = head.y + hy * 1.1f * sf + mir * hx * 1.0f * sY;
+    const float lungeE = 1.0f - d.bell * 0.85f;   // the far eye: lunges only
+    if (lungeE < 0.75f) {
+      float a2 = (0.75f - lungeE) * 1.2f;
+      float ex2 = head.x + offX + ehx * 1.1f * sf - emir * ehy * 1.0f * sY;
+      float ey2 = head.y + ehy * 1.1f * sf + emir * ehx * 1.0f * sY;
       fillRectAA(ex2 - 0.4f, ey2 - 0.4f, 0.8f, 0.8f, rgb565(6, 14, 16), a2 * 0.7f);
     }
     }
@@ -950,12 +961,19 @@ static void drawFish(const Rig& rig, const Fish& f, float offX) {
     // Which side is "down" here goes by which way this part of the body
     // points, not by the fish's overall facing: mid-turn the two disagree, and
     // going by the overall facing flipped the fin over to the back and back.
-    float pmir = mir;
+    // Both by this part's own sign, with no borrowing from the overall facing
+    // (that flipped it over and back), and laid along the body the way the
+    // body segments are drawn - tilt held to the fish's climb - so it does not
+    // swing up or down with a foreshortened bone.
+    const float fdx = f.bones[0].x - f.bones[2].x, fdy = f.bones[0].y - f.bones[2].y;
+    const float pmir = (fabsf(fdx) > 1e-4f) ? ((fdx >= 0) ? 1.0f : -1.0f) : mir;
+    float baseAng;
     {
-      const float dx = f.bones[0].x - f.bones[2].x;
-      if (fabsf(dx) > 0.6f) pmir = (dx >= 0) ? 1.0f : -1.0f;
+      const float lim = fabsf(f.pitch) + 0.15f;
+      const float tilt = clampf(atan2f(fdy, fabsf(fdx) > 1e-4f ? fabsf(fdx) : 1e-4f), -lim, lim);
+      baseAng = (pmir > 0) ? tilt : (float)M_PI - tilt;
     }
-    float pa = pb.a + pmir * ((float)M_PI_2 + flap * 0.55f);
+    float pa = baseAng + pmir * ((float)M_PI_2 + flap * 0.55f);
     float pl = (c->key == SP_NEON ? 2.2f : 3.2f) * (1 + d.bell * 0.4f);
     // Mid-turn the body is foreshortened, and a fin drawn at its full length
     // off a body that short stuck out of it like a spike; it shortens with the
@@ -966,8 +984,8 @@ static void drawFish(const Rig& rig, const Fish& f, float offX) {
       const float fore1 = clampf(hl / (2.0f * c->spacing * f.sf), 0.0f, 1.0f);
       pl *= 0.25f + 0.75f * fore1;
     }
-    float bx = pb.x + offX + fcos(pb.a) * 1.5f;
-    float by = pb.y + fsin(pb.a) * 1.5f;
+    float bx = pb.x + offX + fcos(baseAng) * 1.5f;
+    float by = pb.y + fsin(baseAng) * 1.5f;
     if (c->key == SP_NEON)
       lineAA(bx, by, bx + fcos(pa) * pl, by + fsin(pa) * pl, 0.7f,
              hazed(170, 235, 228, lgF, hF), 0.55f);
@@ -975,13 +993,26 @@ static void drawFish(const Rig& rig, const Fish& f, float offX) {
       lineAA(bx, by, bx + fcos(pa) * pl, by + fsin(pa) * pl, 0.7f,
              hazed(200, 222, 196, lgF, hF), 0.55f);
     else
+#if DEBUG_ONE_MOLLY
+      lineAA(bx, by, bx + fcos(pa) * pl, by + fsin(pa) * pl, 0.7f,
+             rgb565(255, 0, 0), 1.0f);
+#else
       lineAA(bx, by, bx + fcos(pa) * pl, by + fsin(pa) * pl, 0.7f,
              hazed(235, 150, 110, lgF, hF), 0.60f);
-    if (facing < 0.9f) {
-      float aa = 0.3f * (1 - facing) + 0.15f;
-      float fa = pb.a - pmir * ((float)M_PI_2 + flap * 0.55f);
+#endif
+    // The far fin shows only when the fish lunges towards the glass; mid-turn
+    // it came up over the back like something growing out of it.
+    const float lunge = 1.0f - d.bell * 0.85f;
+    if (lunge < 0.9f) {
+      float aa = 0.3f * (1 - lunge) + 0.15f;
+      float fa = baseAng - pmir * ((float)M_PI_2 + flap * 0.55f);
+#if DEBUG_ONE_MOLLY
+      lineAA(bx, by, bx + fcos(fa) * pl * 0.9f, by + fsin(fa) * pl * 0.9f, 0.7f,
+             rgb565(0, 0, 255), 1.0f);
+#else
       lineAA(bx, by, bx + fcos(fa) * pl * 0.9f, by + fsin(fa) * pl * 0.9f, 0.7f,
              hazed(200, 240, 235, lgF, hF), aa);
+#endif
     }
   }
   tExtra[cid] += (uint32_t)(esp_timer_get_time() - _t2);

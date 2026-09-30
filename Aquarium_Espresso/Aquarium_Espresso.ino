@@ -398,6 +398,10 @@ void setup() {
   if (!loadBackdrop()) while (true) delay(1000);
   lightInit();
   lightPrepBackdrop();
+#if DEBUG_ONE_MOLLY
+  // debug: a black tank, so nothing in the photo hides a glitch
+  memset(BGBUF, 0, (size_t)FB_W * FB_H * sizeof(uint16_t));
+#endif
   bubblesInit();
 
   // Before buildRigs(), which is where the sprite pointers are wired up. No

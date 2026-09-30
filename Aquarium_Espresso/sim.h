@@ -306,6 +306,7 @@ void tapWater(Sim& sim, float x, float y);
 void startDepthEvent(Fish& f, bool stress);
 
 // walk the motion trail backwards by `back` px (measured in 3D)
-void trailAt(const Trail& tr, float back, float& ox, float& oy, float& oz);
+void trailAt(const Trail& tr, float hx, float hy, float hz, float back,
+             float& ox, float& oy, float& oz);
 
 #endif // PIXAQ_SIM_H

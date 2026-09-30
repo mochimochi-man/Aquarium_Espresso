@@ -350,13 +350,16 @@ static void stepDepth(Fish& f, float dt) {
 }
 
 // --- spine chain -----------------------------------------------------------
-void trailAt(const Trail& tr, float back, float& ox, float& oy, float& oz) {
-  int n = 0;                                   // 0 = newest
+// Measured back along the path from the head itself, not from the newest
+// point on the path: that point is only laid down every half pixel or so, and
+// measured from it the whole body stood still for a frame and then caught up
+// the next, so the tail stepped along instead of following.
+void trailAt(const Trail& tr, float hx, float hy, float hz, float back,
+             float& ox, float& oy, float& oz) {
   float acc = 0;
-  int i0 = tr.idx(0);
-  float px = tr.x[i0], py = tr.y[i0], pz = tr.z[i0];
-  while (n < tr.n - 1 && acc < back) {
-    int j = tr.idx(n + 1);
+  float px = hx, py = hy, pz = hz;
+  for (int n = 0; n < tr.n && acc < back; n++) {
+    int j = tr.idx(n);
     float qx = tr.x[j], qy = tr.y[j], qz = tr.z[j];
     float dx = px - qx, dy = py - qy, dz = pz - qz;
     float seg = sqrtf(dx * dx + dy * dy + dz * dz);
@@ -367,7 +370,7 @@ void trailAt(const Trail& tr, float back, float& ox, float& oy, float& oz) {
       oz = pz + (qz - pz) * t;
       return;
     }
-    acc += seg; px = qx; py = qy; pz = qz; n++;
+    acc += seg; px = qx; py = qy; pz = qz;
   }
   ox = px; oy = py; oz = pz;
 }
@@ -404,7 +407,7 @@ static void stepChain(Fish& f) {
   // The body on the path, in 3D.
   float P[BONES][3];
   P[0][0] = f.x; P[0][1] = f.y; P[0][2] = f.z;
-  for (int b = 1; b < BONES; b++) trailAt(tr, b * sp, P[b][0], P[b][1], P[b][2]);
+  for (int b = 1; b < BONES; b++) trailAt(tr, f.x, f.y, f.z, b * sp, P[b][0], P[b][1], P[b][2]);
 
   // ...but a body only bends so far at each joint. Coming about on a tight
   // curve the path doubles back on itself, and a body laid on it folds into a
