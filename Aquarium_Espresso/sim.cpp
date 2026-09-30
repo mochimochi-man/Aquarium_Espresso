@@ -124,6 +124,8 @@ static void makeFish(Fish& f, const SpeciesCfg* cfg, bool school, int sid,
   }
   f.effort = 1.0f;
   f.thrash = 0;
+  f.flick = 0;
+  f.tailFace = 0;
 }
 
 // --- the codes the serial console uses --------------------------------------
@@ -466,6 +468,18 @@ static void stepChain(Fish& f) {
       f.bones[b].y = f.y + oy * cp + fabsf(ox) * s;
     }
   }
+  // A segment of the back half turning over from one side to the other is
+  // drawn flipped from one frame to the next, and however that is smoothed a
+  // tail can still be seen to jump. A real fish flicks its tail as it comes
+  // round, so it does that here, just then, and the jump is lost in it.
+  {
+    uint8_t face = 0;
+    for (int b = 1; b < BONES - 1; b++)
+      if (f.bones[b].x - f.bones[b + 1].x >= 0.0f) face |= (uint8_t)(1 << b);
+    if (face != f.tailFace) f.flick = 1.0f;
+    f.tailFace = face;
+  }
+
   // angles: the head along the body's axis, the rest along their segment
   f.bones[0].a = f.heading;
   for (int b = 1; b < BONES; b++) {
@@ -1164,6 +1178,19 @@ static void stepFish(Sim& sim, Fish& f, float dt) {
       }
     }
   }
+#if DEBUG_ONE_MOLLY
+  // turn test: every couple of seconds the target goes behind it
+  if (!busy) {
+    static float dbgT = 0;
+    dbgT -= dt;
+    if (dbgT <= 0) {
+      dbgT = 2.5f;
+      f.tx = clampf(fcos(f.heading) >= 0 ? f.x - 90.0f : f.x + 90.0f, 30, 290);
+      f.ty = clampf(f.y + rnd(-10, 10), c->yLo, c->yHi);
+      f.retarget = 10;
+    }
+  }
+#endif
 
   // soft wall avoidance - suspended while an act is deliberately holding the
   // fish against a pane, the substrate or the surface
@@ -1297,7 +1324,9 @@ static void stepFish(Sim& sim, Fish& f, float dt) {
   f.burstY *= expf(-3 * dt);
 
   f.beat += dt * (float)M_PI * 2 * c->beatHz *
-            (0.65f + 0.9f * f.speedNorm + sim.stress * 0.5f + f.thrash * 2.2f);
+            (0.65f + 0.9f * f.speedNorm + sim.stress * 0.5f + f.thrash * 2.2f
+             + f.flick * 1.5f);
+  f.flick *= expf(-4.0f * dt);
   if (f.beat > TRIG_WRAP) f.beat -= TRIG_WRAP;
 
   stepDepth(f, dt);

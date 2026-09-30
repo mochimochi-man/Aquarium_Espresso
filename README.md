@@ -94,6 +94,14 @@ If you do not want your own character, you do not have to connect the SD card re
 
 
 
+## Your own background
+
+
+
+Save a JPEG on the SD card as bg.jpg and it becomes the background, scaled to fill the screen (whatever does not fit is cropped). Progressive JPEGs are not supported.
+
+
+
 ## License
 
 

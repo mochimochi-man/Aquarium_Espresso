@@ -35,4 +35,10 @@ static const int CARD_H = 32;
 // console. Call it before buildRigs().
 bool cardLoad();
 
+// Read /bg.jpg off the card, if there is one, into dst (dw x dh RGB565),
+// filling the screen and cropping what overhangs. False, and dst untouched,
+// for no card, no file or a JPEG that will not decode.
+bool cardLoadBackdrop(uint16_t* dst, int dw, int dh);
+bool bgFromJpeg(const uint8_t* jpg, size_t len, uint16_t* dst, int dw, int dh);
+
 #endif // PIXAQ_CARDFISH_H

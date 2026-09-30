@@ -6,6 +6,7 @@
 extern "C" {
 #include <lgfx/utility/lgfx_pngle.h>
 }
+#include <jpeg_decoder.h>
 
 // --- wiring -----------------------------------------------------------------
 // The pins are the ones the SD module is already wired to. The *bus* is not:
@@ -19,6 +20,9 @@ static const int SD_MISO = 6;
 static const int SD_MOSI = 7;
 static const int SD_CS   = 4;
 static const uint32_t SD_FREQ = 20000000;
+
+// one bus object for everything on the card: two on the same host fought
+static SPIClass sdSPI(HSPI);
 
 static const char* CARD_FILE = "/fish.png";
 
@@ -166,7 +170,6 @@ static bool reduceToSprite(const uint8_t* src, uint32_t sw, uint32_t sh) {
 }
 
 static bool cardLoadAt(uint32_t freq) {
-  static SPIClass sdSPI(HSPI);
   sdSPI.begin(SD_SCLK, SD_MISO, SD_MOSI, SD_CS);
   if (!SD.begin(SD_CS, sdSPI, freq)) {
     Serial.println("card: no SD card (tank runs without one)");
@@ -237,9 +240,145 @@ static bool cardLoadAt(uint32_t freq) {
 // back as garbage ("not a PNG") on some boots and the tank quietly runs without
 // the drawing. So it is tried again, slower each time, before giving up.
 bool cardLoad() {
-  static const uint32_t FREQS[] = { SD_FREQ, 10000000, 4000000 };
+  static const uint32_t FREQS[] = { 4000000, 1000000 };
   for (uint32_t f : FREQS) {
     if (cardLoadAt(f)) return true;
+    delay(50);
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// bg.jpg: somebody's own tank.
+//
+// Any size and shape of photo. It is decoded at the largest of the JPEG
+// decoder's own 1/1, 1/2, 1/4, 1/8 reductions that still covers the screen -
+// that reduction is done inside the DCT and costs nothing - and then boxed
+// down the rest of the way, filling the screen and cropping the overhang
+// evenly from both sides, never stretching it.
+// ---------------------------------------------------------------------------
+static const char* BG_FILE = "/bg.jpg";
+static const size_t BG_MAX_FILE = 8u * 1024 * 1024;       // the JPEG itself
+static const size_t BG_MAX_DECODED = 6u * 1024 * 1024;    // RGB888 after the DCT reduction
+
+bool bgFromJpeg(const uint8_t* jpg, size_t len, uint16_t* dst, int dw, int dh) {
+  esp_jpeg_image_cfg_t cfg = {};
+  cfg.indata = (uint8_t*)jpg;
+  cfg.indata_size = len;
+  cfg.out_format = JPEG_IMAGE_FORMAT_RGB888;
+  cfg.out_scale = JPEG_IMAGE_SCALE_0;
+  esp_jpeg_image_output_t info = {};
+  if (esp_jpeg_get_image_info(&cfg, &info) != ESP_OK || !info.width || !info.height) {
+    Serial.println("bg: not a JPEG this decoder reads (progressive JPEGs are not)");
+    return false;
+  }
+  const uint32_t w0 = info.width, h0 = info.height;
+  // the most the decoder can shrink it while it still covers the screen
+  int sh = 0;
+  while (sh < 3 && (w0 >> (sh + 1)) >= (uint32_t)dw && (h0 >> (sh + 1)) >= (uint32_t)dh) sh++;
+  // ...and more if that is still too much to hold
+  while (sh < 3 && (size_t)(w0 >> sh) * (h0 >> sh) * 3 > BG_MAX_DECODED) sh++;
+  cfg.out_scale = (esp_jpeg_image_scale_t)sh;
+  // (the info call reports the full size whatever the scale, so the reduced
+  // size is worked out here, the way the decoder does it)
+  const uint32_t sw = w0 >> sh, shh = h0 >> sh;
+  const size_t outLen = (size_t)sw * shh * 3;
+  if (!sw || !shh || outLen > BG_MAX_DECODED) {
+    Serial.printf("bg: %ux%u is too large\n", w0, h0);
+    return false;
+  }
+  uint8_t* rgb = (uint8_t*)heap_caps_calloc(outLen, 1, MALLOC_CAP_SPIRAM);
+  if (!rgb) {
+    Serial.printf("bg: no PSRAM for %u bytes\n", (unsigned)outLen);
+    return false;
+  }
+  cfg.outbuf = rgb;
+  cfg.outbuf_size = outLen;
+  cfg.priv.read = 0;
+  if (esp_jpeg_decode(&cfg, &info) != ESP_OK) {
+    Serial.println("bg: decode failed");
+    heap_caps_free(rgb);
+    return false;
+  }
+
+  // fill the screen: the part of the picture with the screen's shape, centred
+  float cw = (float)sw, ch = (float)shh;
+  if (cw * dh > ch * dw) cw = ch * dw / dh; else ch = cw * dh / dw;
+  const float cx0 = (sw - cw) * 0.5f, cy0 = (shh - ch) * 0.5f;
+  for (int y = 0; y < dh; y++) {
+    int ya = (int)(cy0 + ch * y / dh), yb = (int)(cy0 + ch * (y + 1) / dh);
+    if (ya >= (int)shh) ya = shh - 1;
+    if (yb <= ya) yb = ya + 1;
+    if (yb > (int)shh) yb = shh;
+    for (int x = 0; x < dw; x++) {
+      int xa = (int)(cx0 + cw * x / dw), xb = (int)(cx0 + cw * (x + 1) / dw);
+      if (xa >= (int)sw) xa = sw - 1;
+      if (xb <= xa) xb = xa + 1;
+      if (xb > (int)sw) xb = sw;
+      uint32_t r = 0, g = 0, b = 0, n = 0;
+      for (int yy = ya; yy < yb; yy++) {
+        const uint8_t* p = rgb + ((size_t)yy * sw + xa) * 3;
+        for (int xx = xa; xx < xb; xx++, p += 3) { r += p[0]; g += p[1]; b += p[2]; n++; }
+      }
+      r /= n; g /= n; b /= n;
+      dst[(size_t)y * dw + x] = (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+    }
+  }
+  heap_caps_free(rgb);
+  Serial.printf("bg: %ux%u -> 1/%d %ux%u -> %dx%d\n", w0, h0, 1 << sh, sw, shh, dw, dh);
+  return true;
+}
+
+static bool bgLoadAt(uint32_t freq, uint16_t* dst, int dw, int dh, bool& absent) {
+  sdSPI.begin(SD_SCLK, SD_MISO, SD_MOSI, SD_CS);
+  if (!SD.begin(SD_CS, sdSPI, freq)) {
+    sdSPI.end();
+    return false;
+  }
+  bool ok = false;
+  File f = SD.open(BG_FILE, FILE_READ);
+  if (!f) {
+    absent = true;                               // the card is fine, there is just no bg.jpg
+  } else {
+    const size_t len = f.size();
+    uint8_t* buf = (len && len <= BG_MAX_FILE)
+                 ? (uint8_t*)heap_caps_malloc(len, MALLOC_CAP_SPIRAM) : nullptr;
+    if (!buf) {
+      Serial.printf("bg: %s is %u bytes, can not hold it\n", BG_FILE, (unsigned)len);
+      absent = true;                             // no point trying again slower
+    } else {
+      // A few KB at a time through internal RAM: asked for the whole file
+      // straight into PSRAM in one go, the SD library returned nothing at all.
+      static uint8_t chunk[4096];
+      size_t got = 0;
+      while (got < len) {
+        size_t want = len - got < sizeof(chunk) ? len - got : sizeof(chunk);
+        int n = f.read(chunk, want);
+        if (n <= 0) break;
+        memcpy(buf + got, chunk, (size_t)n);
+        got += (size_t)n;
+      }
+      if (got == len) ok = bgFromJpeg(buf, len, dst, dw, dh);
+      else Serial.printf("bg: short read %u of %u\n", (unsigned)got, (unsigned)len);
+      heap_caps_free(buf);
+    }
+    f.close();
+  }
+  SD.end();
+  sdSPI.end();
+  return ok;
+}
+
+// Same retries as fish.png: a card that is there can still misread at power-up.
+bool cardLoadBackdrop(uint16_t* dst, int dw, int dh) {
+  static const uint32_t FREQS[] = { 4000000, 1000000 };
+  for (uint32_t fq : FREQS) {
+    bool absent = false;
+    if (bgLoadAt(fq, dst, dw, dh, absent)) {
+      Serial.printf("bg: %s is the tank\n", BG_FILE);
+      return true;
+    }
+    if (absent) return false;
     delay(50);
   }
   return false;

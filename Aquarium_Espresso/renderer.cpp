@@ -98,7 +98,7 @@ static inline float clampf(float v, float a, float b) {
 // one bone segment of a fish, as an oriented textured quad
 static void IRAM_ATTR drawSegment(const Rig& rig, const Fish& f, int b,
                                   float sY, float sf, int biasVal, float drift,
-                                  float offX, float mirror) {
+                                  float offX, float mirror, float& face) {
   const SpeciesCfg* c = f.cfg;
   const int W = c->W, H = c->H;
   const int segs = BONES - 1;
@@ -120,7 +120,15 @@ static void IRAM_ATTR drawSegment(const Rig& rig, const Fish& f, int b,
   const float full = segW * gsf;
   // (The tail keeps the same floor as the rest: it flips over at its narrowest,
   // and a wider floor made the tail fin jump across at that moment.)
-  const float fore = clampf(slen / (full > 0.1f ? full : 0.1f), 0.22f, 1.0f);
+  float fore = clampf(slen / (full > 0.1f ? full : 0.1f), 0.12f, 1.0f);
+  // The tail flick as the back half turns over (sim.cpp): a tail beats side
+  // to side, which from here is towards and away from the glass, so it shows
+  // as the back of the fish narrowing and widening - not as an up-and-down
+  // wave.
+  if (b >= 2 && f.flick > 0.01f) {
+    const float sw = 0.5f + 0.5f * fsin(f.beat + f.phase);
+    fore = fmaxf(0.12f, fore * (1.0f - 0.55f * f.flick * sw * (b == 3 ? 1.0f : 0.5f)));
+  }
   // A segment foreshortened almost to nothing mid-turn still points the way it
   // points: its direction comes from a wider span of the bones around it, not
   // from the fish's overall heading - which is the *new* way while this part
@@ -146,6 +154,17 @@ static void IRAM_ATTR drawSegment(const Rig& rig, const Fish& f, int b,
   // overall facing while it was near edge-on flipped the tail over and back
   // again at the end of a turn, once for the fish and once for itself.
   if (dl > 0.05f * full && fabsf(ddx) > 1e-4f) mirror = (ddx >= 0) ? 1.0f : -1.0f;
+  // ...unless it points almost straight into the tank, where left or right is
+  // a matter of a fraction of a pixel. The tail's last segment sat like that
+  // at the end of a turn, still facing the old way after the body had come
+  // round, and stood off the body as a strip until it flipped over and went.
+  // Undecided, a segment faces the way the one in front of it does.
+  bool borrowed = false;
+  if (face != 0.0f && mirror != face && fabsf(ddx) < 0.10f * full) {
+    mirror = face;
+    borrowed = true;
+  }
+  face = mirror;
   if (f.vflip) mirror = -mirror;                   // seen in the surface, belly up
   float ang = (dl > 0.05f * full) ? atan2f(ddy, ddx)
             : ((mirror == f.mirror) ? f.heading : (float)M_PI - f.heading);
@@ -154,16 +173,22 @@ static void IRAM_ATTR drawSegment(const Rig& rig, const Fish& f, int b,
   // sprite laid along that stood the part on end like a hook. Seen nose-on a
   // fish is short, not upright, so the tilt a segment is drawn at is held to
   // the fish's own climb plus a little.
+  // And the more nearly it points into the tank, the more nearly level it is
+  // laid: left and right swap over as it passes edge-on, and held at a tilt it
+  // swapped +tilt for -tilt at that moment too, swinging the tall tail fin
+  // across by several pixels - a piece left standing and then gone.
   {
     const float lim = fabsf(f.pitch) + 0.15f;
     if (dl > 0.05f * full) {
       float tilt = atan2f(ddy, fabsf(ddx) > 1e-4f ? fabsf(ddx) : 1e-4f);
-      if (tilt > lim || tilt < -lim) {
-        tilt = clampf(tilt, -lim, lim);
-        // which way along x it points: its own, or the facing when it has none
-        const float sx = (fabsf(ddx) > 1e-4f) ? ddx : f.mirror;
-        ang = (sx >= 0) ? tilt : (float)M_PI - tilt;
-      }
+      tilt = clampf(tilt, -lim, lim);
+      // (only a part foreshortened into the depth: one that is its full length
+      // on screen and upright is a fish going straight up, and stays upright)
+      tilt *= fmaxf(clampf(fabsf(ddx) / (0.5f * full), 0.0f, 1.0f),
+                    clampf((dl / full - 0.5f) / 0.3f, 0.0f, 1.0f));
+      // which way along x it points: its own, or the facing when it has none
+      const float sx = borrowed ? face : ((fabsf(ddx) > 1e-4f) ? ddx : f.mirror);
+      ang = (sx >= 0) ? tilt : (float)M_PI - tilt;
     }
   }
   int srcX = (int)(W - (b + 1) * segW);
@@ -835,8 +860,9 @@ static void drawFish(const Rig& rig, const Fish& f, float offX) {
   // had folded round in front of the head from covering it; the bend limit in
   // stepChain() stops the fold, and sorting by depth instead hid the tail
   // behind the body every time it swung away, so it vanished mid-turn.)
+  float face = 0.0f;
   for (int b = 0; b < BONES - 1; b++)
-    drawSegment(rig, f, b, sY, sf, biasVal, drift, offX, mir);
+    drawSegment(rig, f, b, sY, sf, biasVal, drift, offX, mir, face);
   if (c->key == SP_MOLLY) drawSail(rig, f, sY, sf, biasVal, drift, offX);
   int64_t _t2 = esp_timer_get_time();
   tSeg[cid] += (uint32_t)(_t2 - _t1);
@@ -935,7 +961,8 @@ static void drawFish(const Rig& rig, const Fish& f, float offX) {
       const float dx = f.bones[0].x - f.bones[2].x, dy = f.bones[0].y - f.bones[2].y;
       if (fabsf(dx) > 1e-4f) emir = (dx >= 0) ? 1.0f : -1.0f;
       const float lim = fabsf(f.pitch) + 0.15f;
-      const float tilt = clampf(atan2f(dy, fabsf(dx) > 1e-4f ? fabsf(dx) : 1e-4f), -lim, lim);
+      float tilt = clampf(atan2f(dy, fabsf(dx) > 1e-4f ? fabsf(dx) : 1e-4f), -lim, lim);
+      tilt *= clampf(fabsf(dx) / (c->spacing * f.sf), 0.0f, 1.0f);
       const float ea = (emir > 0) ? tilt : (float)M_PI - tilt;
       ehx = fcos(ea); ehy = fsin(ea);
     }
@@ -970,7 +997,9 @@ static void drawFish(const Rig& rig, const Fish& f, float offX) {
     float baseAng;
     {
       const float lim = fabsf(f.pitch) + 0.15f;
-      const float tilt = clampf(atan2f(fdy, fabsf(fdx) > 1e-4f ? fabsf(fdx) : 1e-4f), -lim, lim);
+      float tilt = clampf(atan2f(fdy, fabsf(fdx) > 1e-4f ? fabsf(fdx) : 1e-4f), -lim, lim);
+      // level as it passes edge-on, as the body segments are
+      tilt *= clampf(fabsf(fdx) / (c->spacing * f.sf), 0.0f, 1.0f);
       baseAng = (pmir > 0) ? tilt : (float)M_PI - tilt;
     }
     float pa = baseAng + pmir * ((float)M_PI_2 + flap * 0.55f);
@@ -1124,7 +1153,10 @@ void renderBand(const Sim& sim, int y0, int y1) {
       clipBand(y0, y1 < S ? y1 : S);
       Fish& g = gSurfaceCopy[cid];
       g = f;
-      toMirror(g, f, 0.38f * (1.0f - fmaxf(depth, 0.0f) / REFLECT_DEPTH));
+      // and fading out as it breaks the surface, not cut off there - it went
+      // in one frame as the tip of a tail rose out of the water
+      toMirror(g, f, 0.38f * (1.0f - fmaxf(depth, 0.0f) / REFLECT_DEPTH)
+                           * clampf((depth + 2.0f) * 0.5f, 0.0f, 1.0f));
       drawFish(rig, g, offX);
     }
     // under the surface, as it is

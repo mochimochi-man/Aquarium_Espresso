@@ -129,6 +129,8 @@ struct Fish {
   float   lifted;        // seconds of slack left on the layer clamp after the
                          // air stone has carried it out of its own water
   float   thrash;        // 0..1 whole-body writhing, for the corydoras dash
+  float   flick;         // 0..1 a flick of the tail as its back half turns over
+  uint8_t tailFace;      // which way the back segments faced last step (bits)
   Bone  bones[BONES];    // per-frame render cache
   float facing;          // 1 = pure side view
   float mirror;          // +1 art as drawn (heading right), -1 flipped

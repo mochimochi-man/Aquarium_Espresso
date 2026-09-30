@@ -346,6 +346,8 @@ static bool loadBackdrop() {
     Serial.println("FATAL: no PSRAM for the backdrop");
     return false;
   }
+  // somebody's own photo on the SD card comes first
+  if (cardLoadBackdrop(BGBUF, FB_W, FB_H)) return true;
   LGFX_Sprite spr(&tft);
   spr.setPsram(true);
   spr.setColorDepth(16);
