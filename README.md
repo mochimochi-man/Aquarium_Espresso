@@ -88,7 +88,7 @@ You also need to install LovyanGFX as a library.
 
 
 
-Make a transparent PNG of 126px x 128px, save it on the SD card as fish.png, and one to three of the guppies are replaced by your character.
+Make a transparent PNG of up to 1024px x 1024px, save it on the SD card as fish.png, and one to three of the guppies are replaced by your character.
 
 If you do not want your own character, you do not have to connect the SD card reader at all.
 

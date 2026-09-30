@@ -88,7 +88,7 @@ PartitionScheme=huge\_app
 
 
 
-126px x 128pxで透過PNGを作り、SD Cardにfish.pngという名前で保存すると、1～3匹のグッピーがオリジナルキャラに置き換わります。
+1024px x 1024px以内の透過PNGを作り、SD Cardにfish.pngという名前で保存すると、1～3匹のグッピーがオリジナルキャラに置き換わります。
 
 特にオリジナルキャラが不要な場合は、SD Card Readerを接続しなくてもかまいません。
 
