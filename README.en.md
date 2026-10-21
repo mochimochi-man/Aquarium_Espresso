@@ -106,7 +106,7 @@ Save a JPEG on the SD card as bg.jpg and it becomes the background, scaled to fi
 
 
 
-Copyright of this project belongs to mochimochi-man / Uh (X : calorie0).
+Copyright of this project belongs to mochimochi-man (X : @MochimochimanEX).
 
 It is MIT licensed, so please feel free to use it.
 
