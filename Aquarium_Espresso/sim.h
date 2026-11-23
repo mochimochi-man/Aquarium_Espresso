@@ -115,6 +115,8 @@ struct Fish {
   DepthEv depth;
   float biasF;           // smoothed roll bias (rows)
   float burstX, burstY;
+  float dart, dartIn;    // a neon's sudden spurt: extra speed (x cruise), and
+                         // the countdown to the next one
   float sepX, sepY;      // crowd separation, recomputed every frame
   float speedNorm;
   bool    school;

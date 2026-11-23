@@ -9,8 +9,14 @@
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
 
+// (overridable from the build, for boards without GPIO 11/12 such as the
+// ESP32-S3 SuperMini: -DPIN_TFT_SCLK=2 -DPIN_TFT_MOSI=1)
+#ifndef PIN_TFT_SCLK
 #define PIN_TFT_SCLK 12
+#endif
+#ifndef PIN_TFT_MOSI
 #define PIN_TFT_MOSI 11
+#endif
 #define PIN_TFT_DC    9
 #define PIN_TFT_CS   10
 #define PIN_TFT_RST  -1     // set to 8 if RST is wired

@@ -95,6 +95,19 @@ static inline float clampf(float v, float a, float b) {
 
 
 // ---------------------------------------------------------------------------
+// Which pixels this fish's body has already painted. Neighbouring segments
+// overlap on purpose - each reaches past its ends to close the wedge that
+// opens at a bend - and on an opaque fish painting the overlap twice does not
+// show. On a see-through one (the glass catfish) it did: every joint came out
+// as a darker band. So within one fish a pixel is painted once, by the first
+// segment to reach it, and the overreach only fills what is still empty.
+// A window around the fish, a bit per pixel, cleared for each fish drawn, one
+// per core (both cores draw fish at once); anything outside the window
+// (never, at these sizes) is simply drawn as before.
+static const int MASK_W = 128, MASK_H = 96;
+static uint8_t gMask[2][MASK_H][MASK_W / 8];
+static int gMaskX0[2] = { 0, 0 }, gMaskY0[2] = { 0, 0 };
+
 // one bone segment of a fish, as an oriented textured quad
 static void IRAM_ATTR drawSegment(const Rig& rig, const Fish& f, int b,
                                   float sY, float sf, int biasVal, float drift,
@@ -385,6 +398,8 @@ static void IRAM_ATTR drawSegment(const Rig& rig, const Fish& f, int b,
       lxRow[ss] = dxw * ca + dyw * sa;
       lyRow[ss] = -dxw * sa + dyw * ca;
     }
+    const int mY = y - gMaskY0[cid];
+    uint8_t* const mrow = ((unsigned)mY < (unsigned)MASK_H) ? gMask[cid][mY] : nullptr;
     for (int x = xs; x < xe; x++) {
       float ar = 0, ag = 0, ab = 0, aa = 0;
       for (int ss = 0; ss < SEG_SAMPLES; ss++) {
@@ -424,6 +439,15 @@ static void IRAM_ATTR drawSegment(const Rig& rig, const Fish& f, int b,
       int al = (int)(aa * AL + 0.5f);
       if (al <= 0) continue;
       if (al > 32) al = 32;
+      if (mrow) {                                // already painted by this fish
+        const int mX = x - gMaskX0[cid];
+        if ((unsigned)mX < (unsigned)MASK_W) {
+          uint8_t& m = mrow[mX >> 3];
+          const uint8_t bit = (uint8_t)(1u << (mX & 7));
+          if (m & bit) continue;
+          m |= bit;
+        }
+      }
       px_blend_pm(x, y, (int)(ar * PR + aa * HR + 0.5f),
                         (int)(ag * PG + aa * HG + 0.5f),
                         (int)(ab * PB + aa * HB + 0.5f), al);
@@ -861,6 +885,16 @@ static void drawFish(const Rig& rig, const Fish& f, float offX) {
   // stepChain() stops the fold, and sorting by depth instead hid the tail
   // behind the body every time it swung away, so it vanished mid-turn.)
   float face = 0.0f;
+  {
+    float bx = f.bones[0].x, by = f.bones[0].y;
+    for (int b = 1; b < BONES; b++) {
+      if (f.bones[b].x < bx) bx = f.bones[b].x;
+      if (f.bones[b].y < by) by = f.bones[b].y;
+    }
+    gMaskX0[cid] = (int)(bx + offX) - 44;
+    gMaskY0[cid] = (int)by - 40;
+    memset(gMask[cid], 0, sizeof(gMask[cid]));
+  }
   for (int b = 0; b < BONES - 1; b++)
     drawSegment(rig, f, b, sY, sf, biasVal, drift, offX, mir, face);
   if (c->key == SP_MOLLY) drawSail(rig, f, sY, sf, biasVal, drift, offX);

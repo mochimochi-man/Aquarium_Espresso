@@ -64,6 +64,7 @@ static void makeFish(Fish& f, const SpeciesCfg* cfg, bool school, int sid,
   f.sf = rnd(0.88f, 1.12f);
   f.depth = { 0, 0, 1, 1, 1, 1, rnd(1, 5), 0 };
   f.biasF = 0; f.burstX = 0; f.burstY = 0; f.lifted = 0;
+  f.dart = 0; f.dartIn = rnd(1.0f, 9.0f);
   f.sepX = 0; f.sepY = 0;
   f.speedNorm = 0.5f;
   f.school = school;
@@ -88,6 +89,9 @@ static void makeFish(Fish& f, const SpeciesCfg* cfg, bool school, int sid,
   // tetras mostly stay with the shoal, but not always
   float r = rnd01();
   if (cfg->key == SP_BLACK)      f.pers = PERS_HOVERER;
+  // A neon tetra spends most of its time standing in the water, each facing
+  // its own way, and moves in spurts - not in a constant orbit of its shoal.
+  else if (cfg->key == SP_NEON)  f.pers = PERS_HOVERER;
   else if (cfg->key == SP_CORY)  f.pers = PERS_NONE;
   else if (cfg->key == SP_SHRIMP) f.pers = PERS_NONE;
   else if (cfg->key == SP_GUPPY || cfg->key == SP_MOLLY || cfg->key == SP_NOTHO)
@@ -115,7 +119,8 @@ static void makeFish(Fish& f, const SpeciesCfg* cfg, bool school, int sid,
   // For the corydoras this is the countdown to its next trip to the surface;
   // for the shrimp, to its next proper swim rather than another scoot.
   f.nextAct = (cfg->key == SP_CORY)   ? rnd(10, 90)
-            : (cfg->key == SP_SHRIMP) ? rnd(8, 45) : rnd(5, 30);
+            : (cfg->key == SP_SHRIMP) ? rnd(8, 45)
+            : (cfg->key == SP_NEON)   ? rnd(0.5f, 3.0f) : rnd(5, 30);
   f.holdX = f.x; f.holdY = f.y;
   if (cfg->key == SP_TRANSLUCENT) {
     // its own place in the shoal, as an offset from the shoal's centre
@@ -529,7 +534,8 @@ static float stepAct(Sim& sim, Fish& f, float dt) {
       && f.cfg->key != SP_CORY && f.cfg->key != SP_SHRIMP
       && f.cfg->key != SP_HATCHET && f.cfg->key != SP_TRANSLUCENT && f.cfg->key != SP_LOACH) {
     f.act = ACT_SWIM;
-    f.nextAct = rnd(8, 20);
+    // a neon scatters, and is standing still again a moment later
+    f.nextAct = (f.cfg->key == SP_NEON) ? rnd(2, 5) : rnd(8, 20);
   }
 
   float want = 1.0f;
@@ -897,14 +903,19 @@ static float stepAct(Sim& sim, Fish& f, float dt) {
       f.ty = f.holdY;
       want = 0.05f;
       f.actT -= dt;
-      if (f.actT <= 0) { f.act = ACT_SWIM; f.nextAct = rnd(1.5f, 5.0f); }
+      if (f.actT <= 0) {
+        f.act = ACT_SWIM;
+        // a neon only swims long enough to get back among the others
+        f.nextAct = (f.cfg->key == SP_NEON) ? rnd(1.5f, 4.0f) : rnd(1.5f, 5.0f);
+      }
       break;
 
     case ACT_SWIM:
       f.nextAct -= dt;
       if (f.pers != PERS_NONE && f.nextAct <= 0 && sim.stress < 0.2f) {
         if (f.pers == PERS_HOVERER) {
-          f.act = ACT_HOLD; f.actT = rnd(4, 15);
+          f.act = ACT_HOLD;
+          f.actT = (f.cfg->key == SP_NEON) ? rnd(6, 20) : rnd(4, 15);
           f.holdX = f.x; f.holdY = f.y;
         } else if (f.pers == PERS_GULPER) {
           f.act = ACT_RISE; f.actT = 9.0f;
@@ -938,7 +949,12 @@ static float stepAct(Sim& sim, Fish& f, float dt) {
       f.actT -= dt;
       if (f.actT <= 0) {
         f.act = ACT_SINK; f.actT = 7.0f;
-        f.holdY = rnd(VIEW::ymap(45), VIEW::ymap(92));
+        // back down to where the guppies cruise - but never above the
+        // fish's own layer: a nothobranchius lives lower, and sinking only to
+        // the guppies' depth left it above its layer when the act ended, where
+        // the layer clamp then snapped it down in one frame
+        f.holdY = clampf(rnd(VIEW::ymap(45), VIEW::ymap(92)),
+                         f.cfg->yLo + 4.0f, f.cfg->yHi - 4.0f);
       }
       break;
 
@@ -1113,6 +1129,22 @@ static void stepScare(Sim& sim, float dt) {
   if (nc) scareHatchets(sim, sim.fish[cand[(int)rnd(0, nc) % nc]].x);
 }
 
+// A neon tetra mostly stands in the water, and moves in spurts. Small tetras
+// swim burst-and-coast: at low speed the burst is a single stroke or two of
+// the tail, and in the coast that follows "the body was held straight and the
+// fish decelerated until the velocity dropped to almost zero"; the whole
+// cycle is about 0.23 s at rest (Li et al. 2021, Commun Biol 4:40, red-nose
+// tetra). So a spurt here is an instant jump in speed that dies away within a
+// quarter of a second, about a body length on, with the body kept straight -
+// it does not wind up and it does not thrash. Each fish on its own clock; the
+// shoal's own dash (a tap) is separate.
+static const float DART_MIN = 2.0f, DART_MAX = 9.0f;   // s between spurts
+static const float DART_KICK = 12.0f;   // speed at the start, times cruise
+static const float DART_DECAY = 11.0f;  // 1/s: time constant ~0.09 s
+
+// px/s a fish outside its layer is eased back in at
+static const float LAYER_RETURN = 30.0f;
+
 static void stepFish(Sim& sim, Fish& f, float dt) {
   const SpeciesCfg* c = f.cfg;
 
@@ -1250,9 +1282,28 @@ static void stepFish(Sim& sim, Fish& f, float dt) {
 
   float spd = c->baseSpeed * (0.8f + 0.35f * fsin(sim.tw * 0.23f + f.phase));
   f.speed += (spd - f.speed) * fminf(1.0f, dt * 2);
+  if (c->key == SP_NEON) {
+    if (!busy || f.act == ACT_HOLD) {
+      f.dartIn -= dt;
+      if (f.dartIn <= 0.0f) {
+        f.dartIn = rnd(DART_MIN, DART_MAX);
+        f.dart = DART_KICK * rnd(0.7f, 1.2f);
+        // from a standstill it goes on a little way and stands there instead
+        // - not back to where it was
+        if (f.act == ACT_HOLD) {
+          f.holdX = clampf(f.holdX + (fcos(f.heading) >= 0 ? 1.0f : -1.0f) * rnd(8, 16), 25, 295);
+          f.holdY = clampf(f.holdY + rnd(-5, 5), c->yLo, c->yHi);
+        }
+      }
+    }
+    f.dart -= f.dart * fminf(1.0f, dt * DART_DECAY);
+  }
   float boost = (1 + sim.stress * 1.3f
               + (f.school && !busy ? sim.school[f.sid].dash * 0.9f : 0.0f)) * eff;
+  // the tail's beat and swing follow the swimming, not the coast: during a
+  // spurt the body is held straight
   f.speedNorm = clampf((f.speed * boost) / (c->baseSpeed * 2.4f), 0, 1);
+  boost += f.dart;
 
   // --- caught in the air stone ---------------------------------------------
   // Water moving is water moving; what differs between fish is how much of it
@@ -1317,8 +1368,16 @@ static void stepFish(Sim& sim, Fish& f, float dt) {
   const bool loose = (c->key == SP_SHRIMP)
                    ? (f.lifted > 0 || f.act == ACT_FLICK)
                    : (busy || f.lifted > 0);
-  if (loose) f.y = clampf(f.y, VIEW::y0 - 6, VIEW::y1 + 4);
-  else       f.y = clampf(f.y, c->yLo - 8, c->yHi + 8);
+  if (loose) {
+    f.y = clampf(f.y, VIEW::y0 - 6, VIEW::y1 + 4);
+  } else {
+    // Back into the layer at a swimming pace, not in one frame: whatever left
+    // the fish outside it (an act ending early, a startle) must not read as a
+    // jump. It is steering back in anyway (the wall avoidance above).
+    const float lo = c->yLo - 8, hi = c->yHi + 8, back = LAYER_RETURN * dt;
+    if (f.y < lo)      f.y = fminf(lo, f.y + back);
+    else if (f.y > hi) f.y = fmaxf(hi, f.y - back);
+  }
 
   f.burstX *= expf(-3 * dt);
   f.burstY *= expf(-3 * dt);
